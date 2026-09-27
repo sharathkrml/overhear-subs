@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import re
 import subprocess
 import threading
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -609,3 +611,167 @@ class LookaheadScheduler:
                 self.on_cues(idx, cues)
             except Exception:
                 pass
+
+
+# --------------------------------------------------------------------------
+# read-along TTS
+# --------------------------------------------------------------------------
+
+TTS_PEAK = 0.95  # normalise so every cue lands at a consistent loudness
+TTS_MAX_SPEED = 1.6
+
+
+def write_wav(path: Path, audio, sample_rate: int) -> None:
+    """Mono float32 -> 16-bit PCM wav, written atomically.
+
+    The browser polls for these files, so a half-written one would decode as
+    noise. Write beside the target and rename.
+    """
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    if 0.01 < peak < 1.0:  # leave silence alone, don't amplify hiss
+        pcm = (np.clip(audio / peak * TTS_PEAK, -1.0, 1.0) * 32767.0).astype("<i2")
+
+    tmp = path.with_suffix(".wav.tmp")
+    with wave.open(str(tmp), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(sample_rate)
+        fh.writeframes(pcm.tobytes())
+    os.replace(tmp, path)
+
+
+class TTSSynthesizer:
+    """Speaks cues ahead of the playhead into the same cache an export would read.
+
+    Kokoro runs ~12x realtime, so the ten seconds of runway the ASR scheduler
+    already keeps is plenty: a cue is on disk long before the playhead reaches
+    it. Cues are keyed by start time, so a re-broadcast (a rewind, a duplicate
+    chunk) is free and a resumed session reuses the cache.
+    """
+
+    def __init__(self, speak, sample_rate: int, root: Path, voice: str,
+                 enabled: bool = False):
+        self.speak = speak
+        self.sample_rate = sample_rate
+        self.root = Path(root)
+        self.voice = voice
+        self.enabled = enabled
+
+        self.cues: dict[int, Cue] = {}
+        self.claimed: set[int] = set()  # queued or written: dedup set
+        self.written = 0                # wavs actually on disk
+        self.error: str | None = None
+        self._queue: queue.Queue[Cue | None] = queue.Queue()
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="tts")
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        # Always start: `enabled` gates what work arrives, not the thread
+        # itself, so toggling read-along on later needs no restart dance.
+        self._thread.start()
+
+    def set_voice(self, voice: str) -> None:
+        """Switch voice mid-session. Each voice caches under its own directory,
+        so switching back replays instantly instead of re-synthesising."""
+        with self._lock:
+            if voice == self.voice:
+                return
+            self.voice = voice
+            self.claimed.clear()
+            # `written` is scoped to the cache directory, and that's what the
+            # browser fetches from, so it restarts with the voice.
+            self.written = 0
+            pending = list(self.cues.values())
+        self.submit(pending)  # re-speak everything under the new voice
+
+    def stop(self) -> None:
+        self._stop.set()
+        for _ in range(64):  # bounded: a drain in flight finishes on its own
+            if self._queue.empty():
+                break
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                break
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    # -- work --------------------------------------------------------------
+
+    def submit(self, cues: list[Cue]) -> None:
+        """Queue whatever hasn't been claimed yet. Cues with nothing speakable
+        are claimed too, so they aren't reconsidered on every re-broadcast."""
+        if not self.enabled or self._stop.is_set():
+            return
+        for cue in cues:
+            key = self._key(cue)
+            with self._lock:
+                if key in self.claimed:
+                    continue
+                self.claimed.add(key)
+                self.cues[key] = cue
+            self._queue.put(cue)
+
+    def _dir(self) -> Path:
+        return self.root / self.voice
+
+    def path_for(self, start: float) -> Path | None:
+        path = self._dir() / f"{self._key(start)}.wav"
+        return path if path.is_file() else None
+
+    def state(self) -> dict:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "ready": self.written > 0,
+                "voice": self.voice,
+                # Counts finished wavs, not claimed cues: the browser uses this
+                # to decide when to look for more audio.
+                "spoken": self.written,
+                "queued": self._queue.qsize(),
+                "error": self.error,
+            }
+
+    # -- internals ---------------------------------------------------------
+
+    def _key(self, cue) -> int:
+        return int(round((cue.start if hasattr(cue, "start") else cue) * 1000))
+
+    def _one(self, cue: Cue) -> None:
+        text = cue.target or cue.source
+        audio = self.speak(text)
+        if audio is None:
+            return
+        # A cue shorter than the line it holds would cut the audio off mid-word.
+        # One retry at a higher speed, then accept the overlap: at 10s of runway
+        # the second pass is free, and chopping audio is worse than a little
+        # bleed into the next cue.
+        span = max(0.05, cue.end - cue.start)
+        if audio.size / self.sample_rate > span:
+            faster = self.speak(text, speed=min(TTS_MAX_SPEED, audio.size / self.sample_rate / span))
+            if faster is not None:
+                audio = faster
+        out = self._dir()
+        out.mkdir(parents=True, exist_ok=True)
+        write_wav(out / f"{self._key(cue)}.wav", audio, self.sample_rate)
+        with self._lock:
+            self.written += 1
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                cue = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if cue is not None:
+                    self._one(cue)
+            except Exception as exc:  # a bad cue must not kill the worker
+                with self._lock:
+                    self.error = f"{type(exc).__name__}: {exc}"
+            finally:
+                self._queue.task_done()

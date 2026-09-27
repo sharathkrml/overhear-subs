@@ -141,6 +141,12 @@
 
         <button type="button" class="ctl-btn wide" id="captions" aria-pressed="true"
                 aria-label="Toggle captions" title="Captions (C)">CC</button>
+        <button type="button" class="ctl-btn wide" id="speak" aria-pressed="false"
+                aria-label="Read the translation aloud" title="Read aloud (R)">Speak</button>
+        <label class="voice-wrap" id="voice-wrap" hidden>
+          <span class="sr-only">Read-along voice</span>
+          <select class="ctl-select" id="voice" aria-label="Read-along voice"></select>
+        </label>
         <button type="button" class="ctl-btn" id="pip" aria-label="Picture in picture"
                 title="Picture in picture (P)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -225,6 +231,7 @@
       <dt>, / .</dt><dd>Frame step (paused)</dd>
       <dt>&lt; / &gt;</dt><dd>Playback speed</dd>
       <dt>C</dt><dd>Toggle captions</dd>
+      <dt>R</dt><dd>Read the translation aloud</dd>
       <dt>F</dt><dd>Fullscreen</dd>
       <dt>P</dt><dd>Picture in picture</dd>
       <dt>⌘O</dt><dd>Open a video</dd>

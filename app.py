@@ -18,9 +18,22 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import backends
-from pipeline import LOOKAHEAD, VIDEO_EXT, LookaheadScheduler, PlaybackPrep, build_media
+from pipeline import (
+    CACHE_DIR,
+    LOOKAHEAD,
+    VIDEO_EXT,
+    LookaheadScheduler,
+    PlaybackPrep,
+    TTSSynthesizer,
+    _cache_key,
+    build_media,
+)
 
 STATIC = Path(__file__).parent / "static"
+
+# Off by default: the model is a ~350 MB one-time download, and a session that
+# never asks for read-along shouldn't pay for it.
+TTS_ON = os.environ.get("LT_TTS", "0") not in ("0", "", "false", "no")
 
 log = logging.getLogger("overhear-subs")
 
@@ -31,6 +44,18 @@ def _warm_backend() -> None:
         backends.get_backend().warm()
     except Exception:
         log.exception("model warm-up failed; it will load lazily on first use")
+
+
+def _warm_tts() -> None:
+    """Load Kokoro + espeak off the request thread, then backfill every cue
+    already transcribed so enabling mid-playback isn't silent for a chunk."""
+    try:
+        backends.get_tts().warm()
+    except Exception:
+        log.exception("TTS warm-up failed; it will retry on the next cue")
+    tts, scheduler = session.tts, session.scheduler
+    if tts and tts.enabled and scheduler:
+        tts.submit(scheduler.all_cues())
 
 
 @asynccontextmanager
@@ -104,6 +129,7 @@ class Session:
         self.path: Path | None = None
         self.playback: PlaybackPrep | None = None
         self.scheduler: LookaheadScheduler | None = None
+        self.tts: TTSSynthesizer | None = None
         self.prep: Prep | None = None
         self.clients: set[WebSocket] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -137,7 +163,21 @@ def _state_payload() -> dict:
         payload["playback"] = session.playback.state()
     if session.scheduler:
         payload.update(session.scheduler.state())
+    if session.tts:
+        payload["tts"] = session.tts.state()
     return payload
+
+
+def _tts_state() -> dict:
+    """Shape the client needs even before a media is open: is the feature
+    available, is the model resident yet, and what can be picked."""
+    state = session.tts.state() if session.tts else {
+        "enabled": False, "ready": False, "spoken": 0, "queued": 0, "error": None,
+    }
+    state.update(model=backends.TTS_MODEL, voice=backends.get_tts().voice,
+                 voices=list(backends.KokoroTTS.voices),
+                 sample_rate=backends.KokoroTTS.sample_rate)
+    return state
 
 
 async def broadcast(message: dict) -> None:
@@ -152,6 +192,10 @@ async def broadcast(message: dict) -> None:
 
 
 def _on_cues(idx: int, cues: list) -> None:
+    # Feed the synthesiser from the scheduler's own callback: a chunk landing is
+    # exactly the moment its cues become ten seconds of runway from the playhead.
+    if session.tts:
+        session.tts.submit(cues)
     if not session.loop or not session.clients:
         return
     payload = {"type": "cues", "items": [c.__dict__ for c in cues]}
@@ -180,6 +224,7 @@ async def websocket(client: WebSocket) -> None:
                 "lookahead": LOOKAHEAD,
                 "native_picker": NATIVE_PICKER,
                 "open": session.path is not None,
+                "tts": _tts_state(),
                 "duration": (
                     session.scheduler.chunks[-1][1]
                     if session.scheduler and session.scheduler.chunks
@@ -268,10 +313,22 @@ def open_media(req: OpenReq) -> dict:
         return backend.run(source.slice(t0, t1), t0)
 
     scheduler = LookaheadScheduler(chunks, run_chunk, on_cues=_on_cues)
+    tts_model = backends.get_tts()
+    tts = TTSSynthesizer(
+        tts_model.speak,
+        backends.KokoroTTS.sample_rate,
+        CACHE_DIR / "tts" / _cache_key(path),
+        tts_model.voice,
+        enabled=TTS_ON,
+    )
+    tts.start()
     session.path = path
     session.playback = playback
     session.scheduler = scheduler
+    session.tts = tts
     scheduler.start()
+    if TTS_ON:
+        _warm_tts()
 
     return {
         "path": str(path),
@@ -293,6 +350,44 @@ def media() -> FileResponse:
     # On conversion failure fall back to the original: it may not play, but
     # transcription still works and the UI can say what went wrong.
     return FileResponse(playback.output or playback.source)
+
+
+class TTSReq(BaseModel):
+    on: bool
+    voice: str | None = None
+
+
+@app.post("/api/tts")
+def tts_toggle(req: TTSReq) -> dict:
+    """Turn read-along on or off, or change voice. Enabling loads the model in
+    the background; the client polls /api/state until `tts.ready` flips."""
+    tts = session.tts
+    if tts is None:
+        raise HTTPException(400, "no media open")
+    if req.voice and req.voice in backends.KokoroTTS.voices:
+        # Model first, then the cache directory: set_voice re-queues immediately,
+        # so the worker must already be synthesising the new voice.
+        backends.get_tts().voice = req.voice
+        tts.set_voice(req.voice)
+    if req.on and not tts.enabled:
+        tts.enabled = True
+        threading.Thread(target=_warm_tts, daemon=True, name="warm-tts").start()
+    elif not req.on:
+        tts.enabled = False
+    return _tts_state()
+
+
+@app.get("/api/tts/audio")
+def tts_audio(start: float) -> FileResponse:
+    """One spoken cue as wav. 404 until the synthesiser has reached it."""
+    tts = session.tts
+    if tts is None:
+        raise HTTPException(404, "no media open")
+    path = tts.path_for(start)
+    if path is None:
+        raise HTTPException(404, "not spoken yet")
+    return FileResponse(path, media_type="audio/wav",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/cues")
@@ -370,6 +465,9 @@ def _teardown() -> None:
     if session.playback:
         session.playback.cancel()
         session.playback = None
+    if session.tts:
+        session.tts.stop()
+        session.tts = None
     if session.scheduler:
         session.scheduler.stop()
         session.scheduler = None
