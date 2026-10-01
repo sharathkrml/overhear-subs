@@ -7,6 +7,7 @@ LT_CACHE ?= $(HOME)/.cache/overhear-subs
 # Keep this list in sync with the app's env vars.
 APP_VARS = PORT LT_CACHE LT_LOOKAHEAD LT_CHUNK LT_REMUX LT_TRANSLATE_MODEL \
            LT_TTS LT_TTS_MODEL LT_TTS_VOICE LT_TTS_LANG \
+           LT_OLLAMA_URL LT_CHAPTER_MODEL LT_CHAPTER_AIM LT_CHAPTER_MIN LT_CHAPTER_MAX \
            PHONEMIZER_ESPEAK_LIBRARY PHONEMIZER_ESPEAK_DATA_PATH \
            HF_TOKEN HUGGING_FACE_HUB_TOKEN
 # Export only names that are actually set. `export FOO` on an undefined name

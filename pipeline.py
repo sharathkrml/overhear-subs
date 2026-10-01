@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -102,6 +103,35 @@ def extract_pcm(video: Path, duration: float = 0.0,
         duration, on_progress,
     )
     meta.write_text(json.dumps({"source": str(video)}))
+    return out
+
+
+def frame_jpeg(video: Path, t: float, root: Path) -> Path | None:
+    """One JPEG at `t`, input-seeked so it stays fast in a long file.
+
+    Cached by time, so a second hover on the same chapter is a file read. Returns
+    None for audio-only input, which lets the caller draw a placeholder instead
+    of a broken image.
+    """
+    key = int(round(max(0.0, t) * 1000))
+    out = root / f"{key}.jpg"
+    if out.is_file() and out.stat().st_size:
+        return out
+    # `-ss` before `-i` seeks by keyframe; without the frames limit ffmpeg would
+    # decode to the end of the file.
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-nostdin",
+         "-ss", f"{key / 1000:.3f}", "-i", str(video),
+         "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", "-"],
+        capture_output=True, timeout=60,
+    )
+    if not proc.stdout:
+        return None
+    # The browser fetches these, and a half-written file decodes as noise.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".jpg.tmp")
+    tmp.write_bytes(proc.stdout)
+    os.replace(tmp, out)
     return out
 
 
@@ -775,3 +805,178 @@ class TTSSynthesizer:
                     self.error = f"{type(exc).__name__}: {exc}"
             finally:
                 self._queue.task_done()
+
+
+# --------------------------------------------------------------------------
+# chapters: a local LLM names the topic every so often
+# --------------------------------------------------------------------------
+
+# Transcript handed to the LLM per call. The window is only how much context one
+# call gets — the model picks the cuts inside it. Aim is the sweet spot; the
+# clamps matter once you retune it, keeping a short video from getting a chapter
+# per eight seconds and a long one from getting forty meandering titles.
+CHAPTER_AIM = float(os.environ.get("LT_CHAPTER_AIM", "300"))
+CHAPTER_MIN = float(os.environ.get("LT_CHAPTER_MIN", "180"))
+CHAPTER_MAX = float(os.environ.get("LT_CHAPTER_MAX", "480"))
+# Prompt backstop, not a knob. A window of speech is ~7k characters, so this
+# only bites if LT_CHAPTER_AIM is set absurdly high.
+CHAPTER_CHARS = 24000
+
+
+def chapter_window(duration: float, aim: float = CHAPTER_AIM,
+                   lo: float = CHAPTER_MIN, hi: float = CHAPTER_MAX) -> float:
+    """Seconds of transcript per LLM call, derived from the video's length.
+
+    Rounded up to a whole number of windows so the windows tile the video with no
+    remainder, which is what keeps a cut from landing on a fractional edge.
+    """
+    if duration <= 0:
+        return aim
+    return max(lo, min(hi, duration / max(1, math.ceil(duration / aim))))
+
+
+def chapter_script(cues: list[Cue]) -> str:
+    """Cues -> one '[mm:ss] line' per cue, for the model to read.
+
+    The stamps are what it quotes back as a chapter start, so they have to be
+    relative to the window, not to the video.
+    """
+    lines = []
+    for cue in cues:
+        text = " ".join((cue.target or cue.source).split())
+        if text:
+            lines.append(f"[{_stamp(cue.start)}] {text}")
+    return "\n".join(lines)
+
+
+def _stamp(t: float) -> str:
+    m, s = divmod(max(0.0, t), 60.0)
+    return f"{int(m):02d}:{s:04.1f}"
+
+
+class Chapterer:
+    """Names a topic once per window of transcript, off the request thread.
+
+    Cues are bucketed into fixed windows and each one is summarised as soon as it
+    is fully transcribed, so a chapter exists ~a window after you watch it rather
+    than when the video ends. Windows are taken lowest-index-first, so the
+    backfill sweep after a seek fills in the chapters the seek skipped over.
+    """
+
+    # Give up on a window rather than retry it forever: ollama being down is a
+    # reason to stop, not a reason to spin a worker on a dead socket.
+    _TRIES = 3
+
+    def __init__(self, summarize, every: float, is_finished=lambda: False,
+                 enabled: bool = True):
+        self.summarize = summarize
+        self.every = every
+        self.is_finished = is_finished
+        self.enabled = enabled
+
+        self.chapters: list[dict] = []
+        self.error: str | None = None
+        self._windows: dict[int, list[Cue]] = {}
+        self._done: set[int] = set()
+        self._tries: dict[int, int] = {}
+        self._prev: str | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="chapters")
+
+    def start(self) -> None:
+        # Always start, like the synthesiser: `enabled` gates the work arriving,
+        # not the thread, so nothing has to be re-plumbed to turn it on later.
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def submit(self, cues: list[Cue]) -> None:
+        if not self.enabled or self._stop.is_set():
+            return
+        with self._lock:
+            for cue in cues:
+                self._windows.setdefault(int(cue.start // self.every), []).append(cue)
+
+    def state(self) -> dict:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "every": self.every,
+                "chapters": list(self.chapters),
+                "error": self.error,
+            }
+
+    # -- internals ---------------------------------------------------------
+
+    def _ready(self, final: bool = False) -> int | None:
+        """Lowest window worth summarising, or None.
+
+        A window is done-transcribing once its cues run past its end, because
+        transcription is contiguous in time. `final` ignores that and takes
+        whatever is left, so the trailing partial window still gets a chapter
+        once there is no more transcript coming.
+        """
+        with self._lock:
+            for idx in sorted(self._windows):
+                if idx in self._done:
+                    continue
+                cues = self._windows[idx]
+                if final or max(c.end for c in cues) >= (idx + 1) * self.every:
+                    return idx
+        return None
+
+    def _one(self, idx: int) -> None:
+        with self._lock:
+            cues = sorted(self._windows[idx], key=lambda c: c.start)
+            prev = self._prev
+        base = idx * self.every
+        found = self.summarize(chapter_script(cues)[:CHAPTER_CHARS], prev)
+
+        # The model may point a cut anywhere in the window, so clamp it to the
+        # transcript actually in hand; two cuts can land on the same instant.
+        span = max(0.0, cues[-1].end - base)
+        out = [{"start": base + min(c["start"], span), "title": c["title"]}
+               for c in sorted(found, key=lambda c: c["start"])]
+        if not out:
+            out = [{"start": base, "title": prev or "Continued"}]
+        kept = [out[0]]
+        for chapter in out[1:]:
+            if chapter["start"] > kept[-1]["start"]:
+                kept.append(chapter)
+        out = kept
+        # The window edge is always a real boundary, so the window opens with a
+        # chapter even if the model started its first one on a later line.
+        out[0]["start"] = base
+
+        with self._lock:
+            self._done.add(idx)
+            self._tries.pop(idx, None)
+            self._prev = out[-1]["title"]
+            self.chapters.extend(out)
+            self.chapters.sort(key=lambda c: c["start"])
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            idx = self._ready()
+            if idx is None and self.is_finished():
+                idx = self._ready(final=True)
+            if idx is None:
+                self._stop.wait(0.2)
+                continue
+            try:
+                self._one(idx)
+            except Exception as exc:
+                with self._lock:
+                    self._tries[idx] = self._tries.get(idx, 0) + 1
+                    give_up = self._tries[idx] >= self._TRIES
+                    self.error = f"chapter {idx}: {type(exc).__name__}: {exc}"
+                    if give_up:
+                        self._done.add(idx)
+                self._stop.wait(2.0)
+            else:
+                with self._lock:
+                    self.error = None

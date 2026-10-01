@@ -22,11 +22,14 @@ from pipeline import (
     CACHE_DIR,
     LOOKAHEAD,
     VIDEO_EXT,
+    Chapterer,
     LookaheadScheduler,
     PlaybackPrep,
     TTSSynthesizer,
     _cache_key,
     build_media,
+    chapter_window,
+    frame_jpeg,
 )
 
 STATIC = Path(__file__).parent / "static"
@@ -130,6 +133,7 @@ class Session:
         self.playback: PlaybackPrep | None = None
         self.scheduler: LookaheadScheduler | None = None
         self.tts: TTSSynthesizer | None = None
+        self.chapters: Chapterer | None = None
         self.prep: Prep | None = None
         self.clients: set[WebSocket] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -165,6 +169,8 @@ def _state_payload() -> dict:
         payload.update(session.scheduler.state())
     if session.tts:
         payload["tts"] = session.tts.state()
+    if session.chapters:
+        payload["chapters"] = session.chapters.state()
     return payload
 
 
@@ -177,6 +183,22 @@ def _tts_state() -> dict:
     state.update(model=backends.TTS_MODEL, voice=backends.get_tts().voice,
                  voices=list(backends.KokoroTTS.voices),
                  sample_rate=backends.KokoroTTS.sample_rate)
+    return state
+
+
+def _chapters_state() -> dict:
+    """Shape the client needs even before a media is open: which model would do
+    the job, and whether it is actually there to be used.
+
+    Only the `hello` handshake and each open pay for the /api/tags round trip;
+    the 2 Hz state pump reads the cached `enabled` flag off the chapterer.
+    """
+    chapters = session.chapters
+    state = chapters.state() if chapters else {
+        "enabled": False, "every": chapter_window(0.0),
+        "chapters": [], "error": None,
+    }
+    state.update(model=backends.CHAPTER_MODEL, available=backends.get_llm().has_model())
     return state
 
 
@@ -196,6 +218,8 @@ def _on_cues(idx: int, cues: list) -> None:
     # exactly the moment its cues become ten seconds of runway from the playhead.
     if session.tts:
         session.tts.submit(cues)
+    if session.chapters:
+        session.chapters.submit(cues)
     if not session.loop or not session.clients:
         return
     payload = {"type": "cues", "items": [c.__dict__ for c in cues]}
@@ -225,6 +249,7 @@ async def websocket(client: WebSocket) -> None:
                 "native_picker": NATIVE_PICKER,
                 "open": session.path is not None,
                 "tts": _tts_state(),
+                "chapters": _chapters_state(),
                 "duration": (
                     session.scheduler.chunks[-1][1]
                     if session.scheduler and session.scheduler.chunks
@@ -322,10 +347,21 @@ def open_media(req: OpenReq) -> dict:
         enabled=TTS_ON,
     )
     tts.start()
+    llm = backends.get_llm()
+    chapters = Chapterer(
+        llm.chapters,
+        chapter_window(duration),
+        is_finished=lambda: bool(scheduler.state()["finished"]),
+        # Checked per session, not at boot: starting ollama between two videos
+        # is the normal way this gets switched on.
+        enabled=llm.has_model(),
+    )
+    chapters.start()
     session.path = path
     session.playback = playback
     session.scheduler = scheduler
     session.tts = tts
+    session.chapters = chapters
     scheduler.start()
     if TTS_ON:
         _warm_tts()
@@ -395,6 +431,23 @@ def cues() -> dict:
     if not session.scheduler:
         return {"items": []}
     return {"items": [c.__dict__ for c in session.scheduler.all_cues()]}
+
+
+@app.get("/api/frame")
+def frame(start: float) -> FileResponse:
+    """One frame of the open video as jpeg, for the chapter previews.
+
+    Read from the source rather than the remuxed copy: ffmpeg decodes whatever
+    codec is in there, which is exactly the case the browser can't play.
+    """
+    if not session.path:
+        raise HTTPException(404, "no media open")
+    path = frame_jpeg(session.path, start, CACHE_DIR / "frames" / _cache_key(session.path))
+    if path is None:
+        raise HTTPException(404, "no video frame available")
+    # Immutable per (video, time), so the browser only ever asks once.
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/state")
@@ -468,6 +521,9 @@ def _teardown() -> None:
     if session.tts:
         session.tts.stop()
         session.tts = None
+    if session.chapters:
+        session.chapters.stop()
+        session.chapters = None
     if session.scheduler:
         session.scheduler.stop()
         session.scheduler = None

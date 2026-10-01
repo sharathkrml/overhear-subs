@@ -122,6 +122,11 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | `LT_TTS_MODEL` | `mlx-community/Kokoro-82M-4bit` | read-along voice repo |
 | `LT_TTS_VOICE` | `af_heart` | default voice (28 in the picker) |
 | `LT_TTS_LANG` | `a` | Kokoro language code, `a` = American English |
+| `LT_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama endpoint for chapter titles |
+| `LT_CHAPTER_MODEL` | `qwen3:8b` | Ollama model that names the topics |
+| `LT_CHAPTER_AIM` | `300` | transcript seconds per chapter call, before clamping |
+| `LT_CHAPTER_MIN` | `180` | floor on `LT_CHAPTER_AIM` |
+| `LT_CHAPTER_MAX` | `480` | ceiling on `LT_CHAPTER_AIM` |
 | `LT_CACHE` | `~/.cache/overhear-subs` | derived PCM + remuxed mp4 |
 | `PORT` | `8000` | server port (`make run` / `make dev`) |
 
@@ -171,6 +176,77 @@ Apple Silicon and Intel prefixes; override with `PHONEMIZER_ESPEAK_LIBRARY` and
 
 ---
 
+## Chapters
+
+A local Ollama model names the topic as you watch. Chapters get three surfaces, because the
+app is used in three different postures:
+
+| Surface | Where | What it is for |
+| --- | --- | --- |
+| **Panel list** | right side | Browsing. A thumbnail per chapter, so it's scannable rather than a wall of text. |
+| **Timeline lane** | under the meter | Scrubbing. Segments **proportional to each chapter's span**, plus a caption naming the chapter you're currently in. |
+| **Rail** | over the video, from the **Chapters** button | Fullscreen. Fullscreen hides the panel *and* the cursor, so hover is unreachable there — this is a deliberate toggle. |
+
+The lane and the caption live inside the stage, so they ride into fullscreen. The rail does not
+follow the transport's 2.6 s auto-hide: it's navigation, not transport, so it stays until you
+dismiss it. Active chapter is painted on all three surfaces at once — panel row, lane segment,
+and rail card.
+
+Hovering a lane segment or a panel row pops a card with the frame the chapter starts on, its
+title, and `0:00 – 0:26`. Clicking a lane segment goes to that chapter's start, not to the pixel
+under the cursor. Rail cards carry their own frame, so they opt out of the hover card rather
+than showing two thumbnails at once.
+
+The preview card is `position: absolute` **inside `.frame`**, which matters twice: native
+fullscreen only renders its own subtree, so a card parked on `<body>` silently vanishes in
+fullscreen; and being inside the frame means it can never spill past the video and it paints
+over the caption and transport. (It can't be `position: fixed` on `<body>` either — `.panel`
+and `.banner` use `backdrop-filter`, which makes them a containing block for fixed descendants.)
+
+Frames come from `GET /api/frame?start=<seconds>`, which input-seeks ffmpeg (`-ss` *before* `-i`,
+so a two-hour video costs ~70ms rather than a full decode) and caches the JPEG by time — hover
+twice, fetch once. It reads the **source** file, not the remuxed copy, because ffmpeg decodes
+whatever codec is there, which is exactly the case the browser can't play. Audio-only input has
+no frame, so the route 404s and the card falls back to text.
+
+Cues are bucketed into fixed windows of transcript and each window is summarised once it is
+fully transcribed. The window is only **how much context one call gets**: the model returns its
+own cuts inside it, so a passage that holds one topic yields one chapter and a fast-moving one
+yields four. The window length is derived from the video — `LT_CHAPTER_AIM` (5 min) rounded up
+to a whole number of windows and clamped to `LT_CHAPTER_MIN`/`LT_CHAPTER_MAX` — so a 20-minute
+video gets four windows and a 2-hour film gets twenty-four.
+
+```mermaid
+flowchart LR
+  A[chunk transcribed] --> B["bucket cues into windows<br/>(~5 min each)"]
+  B --> C{"window fully<br/>transcribed?"}
+  C -- no --> D[wait]
+  D --> C
+  C -- yes --> E["POST /api/chat<br/>JSON-schema constrained"]
+  E --> F["offsets -> absolute,<br/>anchor window edge"]
+  F --> G[chapter list]
+```
+
+Decoding is constrained by a JSON schema, so there is no prose to parse. Timestamps go to the
+model as `[mm:ss]` offsets from the start of the window — asking an 8B model for a position two
+hours into a file reliably produces mush — and the previous chapter's title goes along with the
+prompt so consecutive windows don't repeat themselves.
+
+Windows are always taken lowest-index-first, so the backfill sweep after a seek fills in the
+chapters the seek skipped over.
+
+**Chapters lag by design.** Transcription runs ~10 s ahead of the playhead, so the first chapter
+can't exist until you've *watched* one window (~5 min). Watch to the end — or let the backfill
+sweep finish — and every chapter appears. There's no way around it: summarising needs the
+transcript.
+
+**Needs Ollama running with the model already pulled.** `ollama pull qwen3:8b`. The app checks
+`/api/tags` and stays off if the model isn't there, because `/api/chat` will happily pull a
+missing model and that's a multi-GB download nobody asked for. Until then the strip says so
+instead of rendering blank.
+
+---
+
 ## Limits (the honest part)
 
 - **How far ahead is approximate.** The worker keeps transcribing until the upcoming chunks are covered, so the runway follows chunk boundaries (~30s, `LT_CHUNK`) rather than landing on an exact number of seconds.
@@ -178,6 +254,14 @@ Apple Silicon and Intel prefixes; override with `PHONEMIZER_ESPEAK_LIBRARY` and
 - **Cached conversions are re-probed** — a stale cache is discarded, not served.
 - **File panel uses `osascript`** (`app.py:choose_file`). macOS may ask once to control System Events (only to bring the panel forward); denied = panel may open behind the browser. Non-macOS falls back to a path field.
 - **Chunk planning re-runs `silencedetect`** on every open (fast, audio-only); PCM extraction is cached.
+- **Chapters lag one window behind playback** — see above. Transcription leads by ~10 s, so a
+  summary can't exist before the words it summarises.
+- **Chapter titles can repeat a window later.** The previous title is in the prompt and an 8B
+  model still occasionally lands on the same name; there is no de-duplication pass over the final
+  list, because that costs another LLM call per chapter for a cosmetic gain.
+- **The chapter model competes for unified memory** with Whisper. `keep_alive: 10m` evicts it
+  once chapters stop coming, but on a 16 GB Mac a large `LT_CHAPTER_MODEL` alongside
+  `whisper-large-v3` will slow transcription — drop to `qwen3:4b` if you see it.
 - **Read-along is English-only.** Whisper translates to English, and Kokoro is strongest in
   English, so speaking the translation is the coherent path. Other Kokoro languages need
   `LT_TTS_LANG` and a matching Whisper target language.

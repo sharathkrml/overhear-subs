@@ -1,5 +1,7 @@
+import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from pipeline import (
     Cue,
@@ -8,6 +10,7 @@ from pipeline import (
     _convert_args,
     _needs_conversion,
     _run_ffmpeg,
+    frame_jpeg,
     plan_chunks,
     reflow_cues,
 )
@@ -299,3 +302,55 @@ def test_reflow_handles_cjk_without_spaces():
     cues = reflow_cues([Cue(0.0, 6.0, "あ" * 100)])
     assert len(cues) >= 2
     assert all(len(line) <= 42 for c in cues for line in c.source.split("\n"))
+
+
+# ------------------------------------------------------- chapter frame grabs
+
+
+def test_frame_jpeg_serves_from_cache_without_touching_ffmpeg(monkeypatch, tmp_path):
+    """Hover previews re-ask for the same chapter, so a cached frame must not
+    re-run ffmpeg."""
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"not really a video")
+    root = tmp_path / "frames"
+    root.mkdir()
+    (root / "12500.jpg").write_bytes(b"\xff\xd8already here")
+
+    def explode(*args, **kwargs):
+        raise AssertionError("ffmpeg must not run on a cache hit")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    assert frame_jpeg(video, 12.5, root).read_bytes() == b"\xff\xd8already here"
+
+
+def test_frame_jpeg_extracts_once_and_seeks_before_the_input(monkeypatch, tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"")
+    root = tmp_path / "frames"
+    runs = []
+
+    def fake_run(args, **kwargs):
+        runs.append(args)
+        return SimpleNamespace(stdout=b"\xff\xd8fresh", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert frame_jpeg(video, 12.504, root).read_bytes() == b"\xff\xd8fresh"
+    frame_jpeg(video, 12.504, root)  # second hover: cached
+    assert len(runs) == 1, runs
+    # -ss must precede -i or ffmpeg decodes from the start of the file, which on
+    # a two-hour video is the difference between 70ms and minutes.
+    assert runs[0].index("-ss") < runs[0].index("-i")
+    assert "-frames:v" in runs[0]
+    assert runs[0][runs[0].index("-ss") + 1] == "12.504"
+
+
+def test_frame_jpeg_is_none_when_there_is_no_picture(monkeypatch, tmp_path):
+    """Audio-only input: the caller draws a placeholder rather than a broken img."""
+    video = tmp_path / "a.m4a"
+    video.write_bytes(b"")
+    root = tmp_path / "frames"
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=b"", returncode=1)
+    )
+    assert frame_jpeg(video, 3.0, root) is None

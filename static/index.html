@@ -96,6 +96,22 @@
 
       <div class="overlay" id="overlay"></div>
 
+      <div class="ch-rail" id="ch-rail" hidden aria-label="Chapters">
+        <div class="ch-rail-track" id="ch-rail-track"></div>
+      </div>
+
+      <!-- Inside .frame on purpose: native fullscreen only renders its own
+           subtree, so a card parked on <body> disappears in fullscreen. Being
+           absolute inside the frame also means it can never spill past the
+           video, and it paints above the overlay and transport. -->
+      <div class="ch-preview" id="ch-preview" hidden role="tooltip">
+        <img id="ch-preview-img" alt="">
+        <div class="ch-preview-body">
+          <p class="ch-preview-title" id="ch-preview-title"></p>
+          <p class="ch-preview-time" id="ch-preview-time"></p>
+        </div>
+      </div>
+
       <div class="controls" id="controls" role="group" aria-label="Player controls" hidden>
         <button type="button" class="ctl-btn" id="play" aria-label="Play" title="Play / pause (Space)">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -141,6 +157,8 @@
 
         <button type="button" class="ctl-btn wide" id="captions" aria-pressed="true"
                 aria-label="Toggle captions" title="Captions (C)">CC</button>
+        <button type="button" class="ctl-btn wide" id="chapters-btn" hidden aria-pressed="false"
+                aria-label="Show chapters" title="Chapters">Chapters</button>
         <button type="button" class="ctl-btn wide" id="speak" aria-pressed="false"
                 aria-label="Read the translation aloud" title="Read aloud (R)">Speak</button>
         <label class="voice-wrap" id="voice-wrap" hidden>
@@ -171,6 +189,8 @@
         <div class="meter-cells" id="meter-cells"></div>
         <div class="meter-head" id="meter-head"></div>
       </div>
+      <div class="ch-lane" id="ch-lane" hidden aria-label="Chapters"></div>
+      <div class="ch-now" id="ch-now" hidden><b id="ch-now-t"></b><span id="ch-now-x"></span></div>
       <div class="meter-row">
         <span class="clock" id="clock">0:00 / 0:00</span>
         <span class="note" id="note">No video open</span>
@@ -190,6 +210,13 @@
           <span>Follow</span>
         </label>
       </div>
+    </div>
+    <div class="chapters" id="chapters" hidden>
+      <div class="ch-head">
+        <h3>Chapters</h3>
+        <p class="ch-note" id="chapter-note" hidden></p>
+      </div>
+      <ol class="chapter-list" id="chapter-list"></ol>
     </div>
     <div class="panel-intro" id="panel-intro">
       <span class="pi-mark" aria-hidden="true"></span>

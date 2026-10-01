@@ -5,13 +5,19 @@ so there is a single backend and no separate translation stage.
 
 Kokoro speaks those translated cues back for read-along. It needs espeak-ng as
 its grapheme-to-phoneme step, like every small open English TTS.
+
+Ollama names a topic every so often so the panel gets a chapter list. It talks
+HTTP rather than loading weights, so there is nothing to warm: the only
+question is whether the model is already pulled.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +34,16 @@ TRANSLATE_ASR = os.environ.get("LT_TRANSLATE_MODEL", "mlx-community/whisper-larg
 TTS_MODEL = os.environ.get("LT_TTS_MODEL", "mlx-community/Kokoro-82M-4bit")
 TTS_VOICE = os.environ.get("LT_TTS_VOICE", "af_heart")
 TTS_LANG = os.environ.get("LT_TTS_LANG", "a")  # 'a' = American English
+
+# Ollama serves the chapter titles. Anything local works; a small instruct model
+# is enough, because the only job is naming a topic from ~1.5k words of context.
+OLLAMA_URL = os.environ.get("LT_OLLAMA_URL", "http://127.0.0.1:11434")
+CHAPTER_MODEL = os.environ.get("LT_CHAPTER_MODEL", "qwen3:8b")
+CHAPTER_MAX_PER_WINDOW = 4
+# A cold qwen3:8b load is ~30s, so the request has to outlast it. The 10s of
+# transcript runway the ASR scheduler already keeps is unaffected: the worker
+# thread is not the one feeding the playhead.
+CHAPTER_TIMEOUT = 300.0
 
 
 def _point_at_espeak() -> None:
@@ -230,3 +246,137 @@ def get_tts() -> KokoroTTS:
     if _tts is None:
         _tts = KokoroTTS()
     return _tts
+
+
+# --------------------------------------------------------------------------
+# Ollama: names a topic in a window of transcript
+# --------------------------------------------------------------------------
+
+# Constrained decoding, so the reply is always this shape and nothing downstream
+# has to parse prose or fish for a title in the middle of a sentence.
+CHAPTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "chapters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "number"},
+                    "title": {"type": "string"},
+                },
+                "required": ["start", "title"],
+            },
+        }
+    },
+    "required": ["chapters"],
+}
+
+_CHAPTER_SYSTEM = (
+    "You split a transcript into chapters for a video's chapter list. "
+    "Reply with JSON only."
+)
+
+# Offsets, not video time: a window is a few minutes of a two-hour file, and an
+# 8B model handed absolute timestamps reliably invents them. Relative ones it can
+# read straight off the [mm:ss] stamps.
+_CHAPTER_PROMPT = """Split this transcript excerpt into video chapters.
+
+Return 1-{max} chapters, each with:
+- start: the [mm:ss] stamp of the first line of that chapter, in seconds. The
+  stamps are offsets from the start of this excerpt, so the first line is 0.
+- title: 3-8 words naming what is discussed from that point on. No quotes, no
+  trailing punctuation, no numbering, and never reuse the previous chapter.
+
+Cut where the topic actually changes, not at even intervals. If the excerpt is
+one continuous topic, return a single chapter starting at 0.
+
+Previous chapter: {prev}
+
+Transcript:
+{text}"""
+
+# Models ignore the instruction often enough to be worth a cheap clean-up.
+_TITLE_EDGES = re.compile(r"^[\s\"'“‘]+|[\s\"'”’.,;:!?]+$")
+
+
+class OllamaLLM:
+    """Chapter titles for a window of transcript, from a local Ollama server."""
+
+    def __init__(self, url: str = OLLAMA_URL, model: str = CHAPTER_MODEL,
+                 timeout: float = CHAPTER_TIMEOUT,
+                 max_chapters: int = CHAPTER_MAX_PER_WINDOW):
+        self.url = url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self.max_chapters = max_chapters
+        self._lock = threading.Lock()
+
+    def has_model(self) -> bool:
+        """Is the model already pulled?
+
+        /api/chat will quietly pull a missing model, and that is a multi-GB
+        download nobody asked for, so the chapterer stays off until it is there.
+        """
+        try:
+            with self._lock:
+                tags = self._get("/api/tags", timeout=3.0)
+        except Exception:
+            return False
+        names = {m.get("name") for m in tags.get("models", [])}
+        return self.model in names or f"{self.model}:latest" in names
+
+    def chapters(self, text: str, prev: str | None = None) -> list[dict]:
+        """[{start, title}] with `start` in seconds from the start of `text`."""
+        body = json.dumps({
+            "model": self.model,
+            "stream": False,
+            # qwen3 is a reasoning model and will spend its budget thinking about
+            # chapter titles instead of writing them.
+            "think": False,
+            # Evict after ten idle minutes instead of sitting in unified memory
+            # for the rest of the session next to Whisper.
+            "keep_alive": "10m",
+            "format": CHAPTER_SCHEMA,
+            "options": {"temperature": 0.4},
+            "messages": [
+                {"role": "system", "content": _CHAPTER_SYSTEM},
+                {"role": "user", "content": _CHAPTER_PROMPT.format(
+                    max=self.max_chapters, prev=prev or "(none)", text=text)},
+            ],
+        }).encode()
+        with self._lock:
+            reply = self._post("/api/chat", body)
+
+        out = []
+        for item in json.loads(reply["message"]["content"]).get("chapters") or []:
+            start = item.get("start")
+            title = _TITLE_EDGES.sub("", str(item.get("title") or ""))[:80]
+            if isinstance(start, (int, float)) and not isinstance(start, bool) and title:
+                out.append({"start": max(0.0, float(start)), "title": title})
+        return sorted(out, key=lambda c: c["start"])[:self.max_chapters]
+
+    # -- transport ---------------------------------------------------------
+
+    def _get(self, path: str, timeout: float) -> dict:
+        with urllib.request.urlopen(self.url + path, timeout=timeout) as fh:
+            return json.loads(fh.read())
+
+    def _post(self, path: str, body: bytes) -> dict:
+        request = urllib.request.Request(
+            self.url + path, data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as fh:
+            return json.loads(fh.read())
+
+
+_llm: OllamaLLM | None = None
+
+
+def get_llm() -> OllamaLLM:
+    """The one resident LLM client. Cheap to build: it holds no weights."""
+    global _llm
+    if _llm is None:
+        _llm = OllamaLLM()
+    return _llm
