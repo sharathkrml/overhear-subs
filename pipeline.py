@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import queue
 import re
+import shutil
 import subprocess
 import threading
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -57,32 +61,221 @@ class Cue:
 
 
 def _cache_key(video: Path) -> str:
+    """Identity of a source file, including its size and mtime.
+
+    Editing a video therefore changes its key, which is what makes the cache
+    correct -- and also what orphans the old entry: nothing else ever reclaims
+    it, so a remuxed copy plus ~230 MB of PCM per hour of video accumulates per
+    revision until the disk fills. `prune_cache` is that reclamation.
+    """
     st = video.stat()
     raw = f"{video.resolve()}|{st.st_size}|{st.st_mtime_ns}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+# --------------------------------------------------------------------------
+# cache management
+# --------------------------------------------------------------------------
+
+# Total bytes the cache may occupy. 0 disables pruning entirely.
+CACHE_MAX_MB = float(os.environ.get("LT_CACHE_MAX", "4096"))
+
+# The two subtrees that hang off a cache key. Everything else is a flat
+# `<key>.<ext>` file sitting directly in CACHE_DIR.
+_CACHE_DIRS = ("frames", "tts")
+
+
+def _walk_bytes(path: Path) -> tuple[int, float]:
+    """Total size and newest mtime of the regular files under `path`.
+
+    Directories are skipped: their st_size is a filesystem implementation detail
+    (64 or 96 bytes for a few bytes of name), not something unlinking reclaims,
+    so counting them made small caches look larger than they were.
+    Symlinks are skipped so a link out of the cache is never weighed or followed.
+    """
+    total = mtime = 0.0
+    targets = [path] if path.is_file() else path.rglob("*")
+    for child in targets:
+        try:
+            if child.is_symlink() or not child.is_file():
+                continue
+            st = child.stat()
+        except OSError:
+            continue  # raced with a prune, or unreadable: not worth failing over
+        total += st.st_size
+        mtime = max(mtime, st.st_mtime)
+    return total, mtime
+
+
+def cache_entries() -> dict[str, tuple[float, int]]:
+    """Every cache key -> (newest mtime, total bytes).
+
+    One key's footprint is spread over `<key>.f32`, `<key>.json`, `<key>.mp4`,
+    `frames/<key>/`, and `tts/<key>/<voice>/`, so all of those have to be summed
+    together or eviction would think a video is nearly free when it is the
+    largest thing in the directory.
+    """
+    sizes: dict[str, int] = {}
+    newest: dict[str, float] = {}
+
+    def add(key: str, path: Path) -> None:
+        if not key:
+            return
+        total, mtime = _walk_bytes(path)
+        if total or mtime:
+            sizes[key] = sizes.get(key, 0) + total
+            newest[key] = max(newest.get(key, 0.0), mtime)
+
+    if not CACHE_DIR.is_dir():
+        return {}
+    for path in CACHE_DIR.iterdir():
+        if path.is_dir():
+            if path.name in _CACHE_DIRS:
+                for child in path.iterdir():
+                    add(child.name, child)
+        else:
+            add(path.name.split(".")[0], path)
+    return {key: (newest[key], sizes[key]) for key in sizes}
+
+
+def _unlink_tree(path: Path) -> int:
+    """Delete a file or a whole directory, returning the bytes reclaimed.
+    Best-effort throughout: a cache we cannot delete is a nuisance, not a
+    failure worth propagating into an open."""
+    try:
+        if path.is_dir() and not path.is_symlink():
+            freed = sum(p.stat().st_size for p in path.rglob("*")
+                        if p.is_file() and not p.is_symlink())
+            shutil.rmtree(path, ignore_errors=True)
+            return freed
+        freed = path.lstat().st_size
+        path.unlink(missing_ok=True)
+        return freed
+    except OSError:
+        return 0
+
+
+def remove_cache_key(key: str) -> int:
+    """Drop everything belonging to one cache key. Returns bytes reclaimed."""
+    if not CACHE_DIR.is_dir():
+        return 0
+    freed = 0
+    for path in CACHE_DIR.iterdir():
+        if path.name == key or (path.is_file() and path.name.split(".")[0] == key):
+            freed += _unlink_tree(path)
+    for sub in _CACHE_DIRS:
+        freed += _unlink_tree(CACHE_DIR / sub / key)
+    return freed
+
+
+def prune_cache(protect: set[str] | None = None, max_mb: float | None = None) -> dict:
+    """Evict least-recently-used keys until the cache fits its budget.
+
+    `protect` holds the active session's key and is never evicted: its PCM may
+    still be an open memmap and its remux may still be in flight. Deleting
+    either would not fail loudly -- the open mapping survives an unlink -- so
+    the damage would show up much later as missing cues.
+    """
+    budget = CACHE_MAX_MB if max_mb is None else max_mb
+    entries = cache_entries()
+    total = sum(size for _, size in entries.values())
+    result = {"freed": 0, "evicted": [], "bytes": total, "budget": budget}
+    if budget <= 0 or not entries:
+        return result
+    protect = protect or set()
+    limit = budget * 1024 * 1024
+    # Oldest first. mtime stands in for "last used": every file is written when
+    # its key is created, so a video you rewatch often still ages out and is
+    # re-demuxed on demand. Cheaper than tracking access, and the expensive
+    # artefacts (TTS audio) are written fresh each session anyway.
+    for key, (mtime, size) in sorted(entries.items(), key=lambda kv: kv[1][0]):
+        if total <= limit:
+            break
+        if key in protect:
+            continue
+        freed = remove_cache_key(key)
+        if freed or key in entries:
+            result["evicted"].append(key)
+        total -= size
+        result["freed"] += freed
+    result["bytes"] = total
+    return result
+
+
+def cache_status() -> dict:
+    """What the cache is holding, for `make cache-status`."""
+    entries = cache_entries()
+    total = sum(size for _, size in entries.values())
+    biggest = max(entries.items(), key=lambda kv: kv[1][1], default=None)
+    return {
+        "dir": str(CACHE_DIR),
+        "keys": len(entries),
+        "bytes": total,
+        "budget_bytes": CACHE_MAX_MB * 1024 * 1024 if CACHE_MAX_MB > 0 else 0,
+        "largest": None if biggest is None else {
+            "key": biggest[0], "bytes": biggest[1][1]},
+    }
+
+
 def _run_ffmpeg(args: list[str], duration: float = 0.0,
-                on_progress: Callable[[float], None] | None = None) -> str:
+                on_progress: Callable[[float], None] | None = None,
+                timeout: float = 0.0) -> str:
     """Run ffmpeg, reporting fraction done from its own -progress lines.
 
     `-progress pipe:2` interleaves progress with the log on stderr, so one
     stream carries both (silencedetect output and progress arrive together).
+
+    `timeout` is a watchdog on the whole run, because the loop below is blocked
+    reading a pipe and cannot poll a deadline itself. It is off by default; the
+    callers that pass one size it from the media duration so a file that stalls
+    ffmpeg forever cannot pin the request thread indefinitely.
     """
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    watchdog = None
+    timed_out = False
+    if timeout > 0:
+        def _kill() -> None:
+            # Recorded here rather than inferred from the exit code: an OOM kill
+            # is also -9, and calling that a timeout would send the reader
+            # looking for a slow file when the real problem is memory.
+            nonlocal timed_out
+            if proc.poll() is None:
+                timed_out = True
+                proc.kill()
+
+        watchdog = threading.Timer(timeout, _kill)
+        watchdog.daemon = True
+        watchdog.start()
     log: list[str] = []
-    for line in proc.stderr:
-        log.append(line)
-        if on_progress and duration > 0 and line.startswith("out_time_ms="):
-            try:
-                micros = int(line.split("=", 1)[1] or 0)
-            except ValueError:
-                continue
-            on_progress(min(1.0, micros / 1_000_000 / duration))
-    proc.wait()
+    try:
+        for line in proc.stderr:
+            log.append(line)
+            if on_progress and duration > 0 and line.startswith("out_time_ms="):
+                try:
+                    micros = int(line.split("=", 1)[1] or 0)
+                except ValueError:
+                    continue
+                on_progress(min(1.0, micros / 1_000_000 / duration))
+        proc.wait()
+    finally:
+        if watchdog:
+            watchdog.cancel()
+    if timed_out:
+        raise TimeoutError(f"ffmpeg timed out after {timeout:g}s")
     if proc.returncode != 0:
         raise RuntimeError("".join(log[-5:]).strip() or "ffmpeg failed")
     return "".join(log)
+
+
+def _ffmpeg_budget(duration: float) -> float:
+    """Watchdog for a full-file ffmpeg pass.
+
+    Audio demux and silence detection both read the whole file, so a real one
+    needs minutes on a long video. Allow ten times the runtime plus a minute of
+    slack for slow disks and a cold cache, and floor it so a file whose duration
+    could not be probed still gets a bounded run instead of none.
+    """
+    return max(60.0, duration * 10.0 + 60.0) if duration > 0 else 300.0
 
 
 def extract_pcm(video: Path, duration: float = 0.0,
@@ -97,9 +290,38 @@ def extract_pcm(video: Path, duration: float = 0.0,
         ["ffmpeg", "-v", "error", "-y", "-i", str(video),
          "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le",
          "-progress", "pipe:2", "-nostats", str(out)],
-        duration, on_progress,
+        duration, on_progress, _ffmpeg_budget(duration),
     )
     meta.write_text(json.dumps({"source": str(video)}))
+    return out
+
+
+def frame_jpeg(video: Path, t: float, root: Path) -> Path | None:
+    """One JPEG at `t`, input-seeked so it stays fast in a long file.
+
+    Cached by time, so a second hover on the same chapter is a file read. Returns
+    None for audio-only input, which lets the caller draw a placeholder instead
+    of a broken image.
+    """
+    key = int(round(max(0.0, t) * 1000))
+    out = root / f"{key}.jpg"
+    if out.is_file() and out.stat().st_size:
+        return out
+    # `-ss` before `-i` seeks by keyframe; without the frames limit ffmpeg would
+    # decode to the end of the file.
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-nostdin",
+         "-ss", f"{key / 1000:.3f}", "-i", str(video),
+         "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", "-"],
+        capture_output=True, timeout=60,
+    )
+    if not proc.stdout:
+        return None
+    # The browser fetches these, and a half-written file decodes as noise.
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".jpg.tmp")
+    tmp.write_bytes(proc.stdout)
+    os.replace(tmp, out)
     return out
 
 
@@ -228,26 +450,35 @@ class PlaybackPrep:
 
     def _run(self, codecs: dict[str, str], cache: Path) -> None:
         part = cache.with_name(cache.stem + ".part.mp4")
+        log: list[str] = []
         try:
             duration = _duration(self.source)
+            # stderr folds into stdout so one drained stream carries both the
+            # -progress lines and the log. Keeping them separate would deadlock:
+            # the loop below blocks on stdout while ffmpeg blocks writing a full
+            # stderr pipe buffer, and neither side ever moves again.
             proc = subprocess.Popen(
                 _convert_args(self.source, part, codecs),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             self._proc = proc
             for line in proc.stdout:
+                log.append(line)
                 if self._cancelled.is_set():
                     proc.kill()
                     break
                 if line.startswith("out_time_ms=") and duration > 0:
-                    micros = int(line.split("=", 1)[1] or 0)
+                    try:
+                        micros = int(line.split("=", 1)[1] or 0)
+                    except ValueError:
+                        continue  # ffmpeg prints out_time_ms=N/A when it can't seek
                     self.progress = min(1.0, micros / 1_000_000 / duration)
             proc.wait()
             if self._cancelled.is_set():
                 part.unlink(missing_ok=True)
                 return
             if proc.returncode != 0:
-                raise RuntimeError((proc.stderr.read() or "ffmpeg failed").strip()[-300:])
+                raise RuntimeError(("".join(log[-5:]) or "ffmpeg failed").strip()[-300:])
             part.replace(cache)
             self.progress = 1.0
             self.output = cache
@@ -292,7 +523,7 @@ def detect_silences(video: Path, duration: float = 0.0,
         ["ffmpeg", "-v", "info", "-i", str(video),
          "-af", "silencedetect=n=-35dB:d=0.4", "-f", "null",
          "-progress", "pipe:2", "-nostats", "-"],
-        duration, on_progress,
+        duration, on_progress, _ffmpeg_budget(duration),
     )
     starts: list[float] = []
     mids: list[float] = []
@@ -483,7 +714,18 @@ class LookaheadScheduler:
     runs to the end before sweeping up chunks skipped over (e.g. seek to 10:00:
     do 10:00→finish, then 0:00→10:00). Results are cached by chunk index, so a
     backward seek re-serves them instantly.
+
+    Transcription runs eagerly: the worker sweeps the whole file as fast as the
+    GPU allows, so it is always ahead of or past the playhead. `lookahead` is
+    only the threshold the client uses to decide it has enough transcript to
+    colour the playhead indicator -- it does not gate the worker.
     """
+
+    # A chunk that fails deterministically (corrupt audio, an unrecoverable OOM)
+    # must not be retried forever: _pick() only skips chunks already in `cache`,
+    # so without this the same index is returned on every pass, spinning at 1Hz
+    # and re-taking the ASR lock each time so the synthesiser never runs.
+    _TRIES = 3
 
     def __init__(
         self,
@@ -504,9 +746,11 @@ class LookaheadScheduler:
         self.playhead = 0.0
         self.error: str | None = None
         self.warming = bool(self.chunks)
+        self.failed: set[int] = set()
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._tries: dict[int, int] = {}
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self) -> None:
@@ -535,6 +779,7 @@ class LookaheadScheduler:
                 "chunks_done": done,
                 "chunks_total": len(self.chunks),
                 "cached": sorted(self.cache),
+                "failed": sorted(self.failed),
                 "finished": done >= len(self.chunks),
                 "error": self.error,
                 "warming": self.warming and done == 0 and self.error is None,
@@ -595,17 +840,406 @@ class LookaheadScheduler:
                 cues = reflow_cues(self.run_chunk(idx, t0, t1))
             except Exception as exc:  # keep the worker alive; surface to the UI
                 self.warming = False
-                self.error = f"chunk {idx}: {type(exc).__name__}: {exc}"
-                self._stop.wait(1.0)
+                with self._lock:
+                    self._tries[idx] = self._tries.get(idx, 0) + 1
+                    give_up = self._tries[idx] >= self._TRIES
+                    self.error = f"chunk {idx}: {type(exc).__name__}: {exc}"
+                    if give_up:
+                        # Cache it empty so _pick() moves on and the session can
+                        # still reach "finished". `failed` keeps the gap visible:
+                        # the cue really is missing, it just isn't a 1Hz spin.
+                        self.cache[idx] = []
+                        self.failed.add(idx)
+                        self._tries.pop(idx, None)
+                self._stop.wait(0.2 if give_up else 1.0)
                 continue
 
             self.warming = False
-            self.error = None
             with self._lock:
+                self._tries.pop(idx, None)
                 self.cache[idx] = cues
+                # Only clear the message while nothing has been given up on —
+                # otherwise the next successful chunk erases the warning that a
+                # chunk of this video was skipped.
+                if not self.failed:
+                    self.error = None
                 if self.next_idx == idx:
                     self.next_idx = idx + 1
             try:
                 self.on_cues(idx, cues)
             except Exception:
                 pass
+
+
+# --------------------------------------------------------------------------
+# read-along TTS
+# --------------------------------------------------------------------------
+
+TTS_PEAK = 0.95  # normalise so every cue lands at a consistent loudness
+TTS_MAX_SPEED = 1.6
+
+
+def write_wav(path: Path, audio, sample_rate: int) -> None:
+    """Mono float32 -> 16-bit PCM wav, written atomically.
+
+    The browser polls for these files, so a half-written one would decode as
+    noise. Write beside the target and rename.
+    """
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    if 0.01 < peak < 1.0:  # leave silence alone, don't amplify hiss
+        pcm = (np.clip(audio / peak * TTS_PEAK, -1.0, 1.0) * 32767.0).astype("<i2")
+
+    tmp = path.with_suffix(".wav.tmp")
+    with wave.open(str(tmp), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(sample_rate)
+        fh.writeframes(pcm.tobytes())
+    os.replace(tmp, path)
+
+
+class TTSSynthesizer:
+    """Speaks cues ahead of the playhead into the same cache an export would read.
+
+    Kokoro runs ~12x realtime, so the ten seconds of runway the ASR scheduler
+    already keeps is plenty: a cue is on disk long before the playhead reaches
+    it. Cues are keyed by start time, so a re-broadcast (a rewind, a duplicate
+    chunk) is free and a resumed session reuses the cache.
+    """
+
+    # Same reason the scheduler caps chunk retries: a cue that always throws
+    # must not spin this worker, which would stall every later cue behind it.
+    _TRIES = 3
+
+    def __init__(self, speak, sample_rate: int, root: Path, voice: str,
+                 enabled: bool = False):
+        self.speak = speak
+        self.sample_rate = sample_rate
+        self.root = Path(root)
+        self.voice = voice
+        self.enabled = enabled
+
+        self.cues: dict[int, Cue] = {}
+        self.claimed: set[int] = set()  # queued or written: dedup set
+        self.written = 0                # wavs actually on disk
+        self.error: str | None = None
+        self._retries: dict[int, int] = {}
+        self._queue: queue.Queue[Cue | None] = queue.Queue()
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="tts")
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        # Always start: `enabled` gates what work arrives, not the thread
+        # itself, so toggling read-along on later needs no restart dance.
+        self._thread.start()
+
+    def set_voice(self, voice: str) -> None:
+        """Switch voice mid-session. Each voice caches under its own directory,
+        so switching back replays instantly instead of re-synthesising."""
+        with self._lock:
+            if voice == self.voice:
+                return
+            self.voice = voice
+            self.claimed.clear()
+            # A cue that exhausted its retries under the old voice gets a fresh
+            # budget under the new one.
+            self._retries.clear()
+            # `written` is scoped to the cache directory, and that's what the
+            # browser fetches from, so it restarts with the voice.
+            self.written = 0
+            pending = list(self.cues.values())
+        self.submit(pending)  # re-speak everything under the new voice
+
+    def stop(self) -> None:
+        self._stop.set()
+        for _ in range(64):  # bounded: a drain in flight finishes on its own
+            if self._queue.empty():
+                break
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                break
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    # -- work --------------------------------------------------------------
+
+    def submit(self, cues: list[Cue]) -> None:
+        """Queue whatever hasn't been claimed yet. Cues with nothing speakable
+        are claimed too, so they aren't reconsidered on every re-broadcast."""
+        if not self.enabled or self._stop.is_set():
+            return
+        for cue in cues:
+            key = self._key(cue)
+            with self._lock:
+                if key in self.claimed:
+                    continue
+                self.claimed.add(key)
+                self.cues[key] = cue
+            self._queue.put(cue)
+
+    def _dir(self) -> Path:
+        return self.root / self.voice
+
+    def path_for(self, start: float) -> Path | None:
+        path = self._dir() / f"{self._key(start)}.wav"
+        return path if path.is_file() else None
+
+    def state(self) -> dict:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "ready": self.written > 0,
+                "voice": self.voice,
+                # Counts finished wavs, not claimed cues: the browser uses this
+                # to decide when to look for more audio.
+                "spoken": self.written,
+                "queued": self._queue.qsize(),
+                "error": self.error,
+            }
+
+    # -- internals ---------------------------------------------------------
+
+    def _key(self, cue) -> int:
+        return int(round((cue.start if hasattr(cue, "start") else cue) * 1000))
+
+    def _one(self, cue: Cue) -> None:
+        text = cue.target or cue.source
+        audio = self.speak(text)
+        if audio is None:
+            return
+        # A cue shorter than the line it holds would cut the audio off mid-word.
+        # One retry at a higher speed, then accept the overlap: at 10s of runway
+        # the second pass is free, and chopping audio is worse than a little
+        # bleed into the next cue.
+        span = max(0.05, cue.end - cue.start)
+        if audio.size / self.sample_rate > span:
+            faster = self.speak(text, speed=min(TTS_MAX_SPEED, audio.size / self.sample_rate / span))
+            if faster is not None:
+                audio = faster
+        out = self._dir()
+        out.mkdir(parents=True, exist_ok=True)
+        write_wav(out / f"{self._key(cue)}.wav", audio, self.sample_rate)
+        with self._lock:
+            self.written += 1
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                cue = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if cue is not None:
+                    self._one(cue)
+            except Exception as exc:  # a bad cue must not kill the worker
+                with self._lock:
+                    self.error = f"{type(exc).__name__}: {exc}"
+                    key = self._key(cue)
+                    tries = self._retries.get(key, 0) + 1
+                    self._retries[key] = tries
+                    again = tries < self._TRIES
+                # Nothing re-submits a cue once its chunk is cached, so a throw
+                # here loses the line's audio for the rest of the session. Put
+                # it back once or twice; after that it is a bad cue, not a
+                # transient one, and spinning on it would starve every other cue.
+                if again:
+                    self._queue.put(cue)
+            else:
+                if cue is not None:
+                    with self._lock:
+                        self._retries.pop(self._key(cue), None)
+            finally:
+                self._queue.task_done()
+
+
+# --------------------------------------------------------------------------
+# chapters: a local LLM names the topic every so often
+# --------------------------------------------------------------------------
+
+# Transcript handed to the LLM per call. The window is only how much context one
+# call gets — the model picks the cuts inside it. Aim is the sweet spot; the
+# clamps matter once you retune it, keeping a short video from getting a chapter
+# per eight seconds and a long one from getting forty meandering titles.
+CHAPTER_AIM = float(os.environ.get("LT_CHAPTER_AIM", "300"))
+CHAPTER_MIN = float(os.environ.get("LT_CHAPTER_MIN", "180"))
+CHAPTER_MAX = float(os.environ.get("LT_CHAPTER_MAX", "480"))
+# Prompt backstop, not a knob. A window of speech is ~7k characters, so this
+# only bites if LT_CHAPTER_AIM is set absurdly high.
+CHAPTER_CHARS = 24000
+
+
+def chapter_window(duration: float, aim: float = CHAPTER_AIM,
+                   lo: float = CHAPTER_MIN, hi: float = CHAPTER_MAX) -> float:
+    """Seconds of transcript per LLM call, derived from the video's length.
+
+    Rounded up to a whole number of windows so the windows tile the video with no
+    remainder, which is what keeps a cut from landing on a fractional edge.
+    """
+    if duration <= 0:
+        return aim
+    return max(lo, min(hi, duration / max(1, math.ceil(duration / aim))))
+
+
+def chapter_script(cues: list[Cue]) -> str:
+    """Cues -> one '[mm:ss] line' per cue, for the model to read.
+
+    The stamps are what it quotes back as a chapter start, so they have to be
+    relative to the window, not to the video.
+    """
+    lines = []
+    for cue in cues:
+        text = " ".join((cue.target or cue.source).split())
+        if text:
+            lines.append(f"[{_stamp(cue.start)}] {text}")
+    return "\n".join(lines)
+
+
+def _stamp(t: float) -> str:
+    m, s = divmod(max(0.0, t), 60.0)
+    return f"{int(m):02d}:{s:04.1f}"
+
+
+class Chapterer:
+    """Names a topic once per window of transcript, off the request thread.
+
+    Cues are bucketed into fixed windows and each one is summarised as soon as it
+    is fully transcribed, so a chapter exists ~a window after you watch it rather
+    than when the video ends. Windows are taken lowest-index-first, so the
+    backfill sweep after a seek fills in the chapters the seek skipped over.
+    """
+
+    # Give up on a window rather than retry it forever: ollama being down is a
+    # reason to stop, not a reason to spin a worker on a dead socket.
+    _TRIES = 3
+
+    def __init__(self, summarize, every: float, is_finished=lambda: False,
+                 enabled: bool = True):
+        self.summarize = summarize
+        self.every = every
+        self.is_finished = is_finished
+        self.enabled = enabled
+
+        self.chapters: list[dict] = []
+        self.error: str | None = None
+        self._windows: dict[int, list[Cue]] = {}
+        self._done: set[int] = set()
+        self._tries: dict[int, int] = {}
+        self._prev: str | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="chapters")
+
+    def start(self) -> None:
+        # Always start, like the synthesiser: `enabled` gates the work arriving,
+        # not the thread, so nothing has to be re-plumbed to turn it on later.
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def submit(self, cues: list[Cue]) -> None:
+        if not self.enabled or self._stop.is_set():
+            return
+        with self._lock:
+            for cue in cues:
+                self._windows.setdefault(int(cue.start // self.every), []).append(cue)
+
+    def state(self) -> dict:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "every": self.every,
+                "chapters": list(self.chapters),
+                "error": self.error,
+            }
+
+    # -- internals ---------------------------------------------------------
+
+    def _ready(self, final: bool = False) -> int | None:
+        """Lowest window worth summarising, or None.
+
+        A window is done-transcribing once its cues run past its end, because
+        transcription is contiguous in time. `final` ignores that and takes
+        whatever is left, so the trailing partial window still gets a chapter
+        once there is no more transcript coming.
+        """
+        with self._lock:
+            for idx in sorted(self._windows):
+                if idx in self._done:
+                    continue
+                cues = self._windows[idx]
+                if final or max(c.end for c in cues) >= (idx + 1) * self.every:
+                    return idx
+        return None
+
+    def _one(self, idx: int) -> None:
+        with self._lock:
+            cues = sorted(self._windows[idx], key=lambda c: c.start)
+            prev = self._prev
+        base = idx * self.every
+        found = self.summarize(chapter_script(cues)[:CHAPTER_CHARS], prev)
+
+        # The model may point a cut anywhere in the window, so clamp it to the
+        # transcript actually in hand; two cuts can land on the same instant.
+        span = max(0.0, cues[-1].end - base)
+        out = [{"start": base + min(c["start"], span), "title": c["title"]}
+               for c in sorted(found, key=lambda c: c["start"])]
+        if not out:
+            out = [{"start": base, "title": prev or "Continued"}]
+        kept = [out[0]]
+        for chapter in out[1:]:
+            if chapter["start"] > kept[-1]["start"]:
+                kept.append(chapter)
+        out = kept
+        # The window edge is always a real boundary, so the window opens with a
+        # chapter even if the model started its first one on a later line.
+        out[0]["start"] = base
+
+        with self._lock:
+            self._done.add(idx)
+            self._tries.pop(idx, None)
+            self._prev = out[-1]["title"]
+            self.chapters.extend(out)
+            self.chapters.sort(key=lambda c: c["start"])
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            idx = self._ready()
+            if idx is None and self.is_finished():
+                idx = self._ready(final=True)
+            if idx is None:
+                self._stop.wait(0.2)
+                continue
+            try:
+                self._one(idx)
+            except Exception as exc:
+                with self._lock:
+                    self._tries[idx] = self._tries.get(idx, 0) + 1
+                    give_up = self._tries[idx] >= self._TRIES
+                    self.error = f"chapter {idx}: {type(exc).__name__}: {exc}"
+                    if give_up:
+                        self._done.add(idx)
+                self._stop.wait(2.0)
+            else:
+                with self._lock:
+                    self.error = None
+
+
+if __name__ == "__main__":
+    # `python pipeline.py` reports what the cache is holding. Everything above
+    # is imported, never run -- this is the only reason the module is a script.
+    _info = cache_status()
+    _mb = 1 << 20
+    print(f"{_info['dir']}: {_info['keys']} key(s), {_info['bytes'] / _mb:.0f} MB")
+    if _info["budget_bytes"]:
+        print(f"  budget {_info['budget_bytes'] / _mb:.0f} MB")
+    if _info["largest"]:
+        print(f"  largest {_info['largest']['key']}: "
+              f"{_info['largest']['bytes'] / _mb:.0f} MB")

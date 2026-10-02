@@ -1,14 +1,25 @@
+import os
+import subprocess
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from pipeline import (
     Cue,
     LookaheadScheduler,
     PlaybackPrep,
     _convert_args,
+    _ffmpeg_budget,
+    cache_entries,
     _needs_conversion,
     _run_ffmpeg,
+    frame_jpeg,
     plan_chunks,
+    prune_cache,
+    remove_cache_key,
     reflow_cues,
 )
 
@@ -78,6 +89,71 @@ def test_cancel_is_safe_without_a_conversion():
     assert prep.error is None
 
 
+def test_remux_drains_stderr_into_the_stream_it_reads(monkeypatch, tmp_path):
+    """The regression: stderr used to be a second pipe nobody drained.
+
+    The loop reads stdout while ffmpeg fills the stderr pipe buffer, so a
+    pathological file wedged the remux thread forever — and `cancel()`'s kill()
+    raced a parent still blocked inside `for line in proc.stdout`.
+    """
+    seen = {}
+
+    def fake_popen(args, **kw):
+        seen.update(kw)
+        Path(args[-1]).write_bytes(b"fake remux")
+
+        class FakeProc:
+            returncode = 0
+
+            def __init__(self):
+                self.stdout = iter(["out_time_ms=1000000\n", "not a progress line\n"])
+
+            def wait(self):
+                return 0
+
+        return FakeProc()
+
+    monkeypatch.setattr("pipeline.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pipeline._duration", lambda p: 4.0)
+    cache = tmp_path / "cache.mp4"
+    prep = PlaybackPrep(Path("clip.mkv"))
+    prep._run({"video": "h264", "audio": "aac"}, cache)
+    assert seen.get("stderr") is subprocess.STDOUT
+    assert prep.error is None, prep.error
+    assert prep.progress == 1.0
+    assert prep.output == cache and cache.is_file()
+
+
+def test_remux_tolerates_an_unseekable_progress_stamp(monkeypatch, tmp_path):
+    """ffmpeg prints `out_time_ms=N/A` when it cannot seek; that used to abort
+    the whole conversion via the outer except, not just skip the line."""
+
+    def fake_popen(args, **kw):
+        Path(args[-1]).write_bytes(b"fake remux")
+
+        class FakeProc:
+            returncode = 0
+
+            def __init__(self):
+                self.stdout = iter(["out_time_ms=N/A\n", "out_time_ms=2000000\n"])
+
+            def wait(self):
+                return 0
+
+        return FakeProc()
+
+    monkeypatch.setattr("pipeline.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pipeline._duration", lambda p: 4.0)
+    prep = PlaybackPrep(Path("clip.mkv"))
+    prep._run({"video": "h264", "audio": "aac"}, tmp_path / "cache.mp4")
+    # Before the fix the N/A line raised ValueError into the outer except, which
+    # recorded the error and deleted the partial output. Reaching 1.0 means the
+    # whole loop ran and the remux landed.
+    assert prep.error is None, prep.error
+    assert prep.progress == 1.0
+    assert (tmp_path / "cache.mp4").is_file()
+
+
 # ------------------------------------------------------------- prep progress
 
 
@@ -118,6 +194,54 @@ def test_ffmpeg_progress_needs_a_duration(monkeypatch):
     seen = []
     _run_ffmpeg(["ffmpeg"], duration=0.0, on_progress=seen.append)
     assert seen == []
+
+
+def test_a_stalled_ffmpeg_is_killed_by_the_watchdog(monkeypatch):
+    """The regression: a full-file pass had no bound at all, and the progress
+    loop is blocked reading a pipe so it could not even check a deadline. A
+    truncated or hostile file pinned a request thread forever, and cancelling an
+    open does not reach these two calls -- Esc only cancels the remux."""
+    killed = threading.Event()
+
+    class FakeProc:
+        returncode = -9
+
+        def __init__(self):
+            self.stderr = self._log()
+
+        def _log(self):
+            while not killed.is_set():
+                yield "still going\n"
+                time.sleep(0.01)
+
+        def poll(self):
+            return -9 if killed.is_set() else None
+
+        def kill(self):
+            killed.set()
+
+        def wait(self):
+            while not killed.is_set():
+                time.sleep(0.01)
+            return -9
+
+    monkeypatch.setattr("pipeline.subprocess.Popen", lambda *a, **k: FakeProc())
+    start = time.time()
+    try:
+        _run_ffmpeg(["ffmpeg"], duration=1.0, timeout=0.2)
+    except TimeoutError as exc:
+        assert "0.2s" in str(exc)
+    else:
+        raise AssertionError("a stalled ffmpeg was never timed out")
+    assert killed.is_set(), "the child was left running"
+    assert time.time() - start < 3.0, "the watchdog did not fire promptly"
+
+
+def test_the_ffmpeg_budget_scales_with_the_media_and_always_bounded():
+    # Long media needs minutes; a tiny file still gets a sane ceiling.
+    assert _ffmpeg_budget(3600.0) > 3600.0
+    assert _ffmpeg_budget(0.0) > 0.0, "an unprobeable duration must still be bounded"
+    assert _ffmpeg_budget(1.0) >= 60.0
 
 
 # --------------------------------------------------------------- planning
@@ -187,6 +311,65 @@ def test_fills_to_end():
     assert wait_until(lambda: scheduler.state()["finished"])
     scheduler.stop()
     assert log == [0, 1, 2, 3]
+
+
+def test_transcription_runs_eagerly_ahead_of_the_playhead():
+    """Pins the deliberate design: the worker sweeps the whole file regardless of
+    where the playhead is. `lookahead` is only the client's highlight threshold,
+    not a gate -- see README's "Runs the whole file" note. If this ever fails,
+    someone re-added a gate that the docs no longer promise.
+    """
+    log = []
+    scheduler = make_scheduler(make_chunks(6), log)
+    scheduler.start()
+    assert wait_until(lambda: scheduler.state()["finished"])
+    scheduler.stop()
+    scheduler.set_playhead(150.0)  # parked on the last chunk
+    assert log == [0, 1, 2, 3, 4, 5], "every chunk ran before the playhead moved"
+
+
+def test_a_poisoned_chunk_is_retried_then_skipped_not_ground_on():
+    """The regression: a chunk that always throws was never written to `cache`,
+    so `_pick()` returned the same index on every pass -- a 1Hz spin that re-took
+    the ASR lock each time and starved the synthesiser for the whole session."""
+    attempts = []
+
+    def run_chunk(idx, t0, t1):
+        attempts.append(idx)
+        if idx == 1:
+            raise RuntimeError("unrecoverable")
+        return [Cue(t0, t1, f"chunk {idx}")]
+
+    scheduler = LookaheadScheduler(make_chunks(4), run_chunk, poll=0.01)
+    scheduler.start()
+    assert wait_until(lambda: scheduler.state()["finished"], timeout=8.0)
+    scheduler.stop()
+
+    assert attempts.count(1) == LookaheadScheduler._TRIES, \
+        "a permanently failing chunk must not retry forever"
+    assert sorted(set(attempts)) == [0, 1, 2, 3], "the sweep must continue past it"
+    state = scheduler.state()
+    assert state["failed"] == [1]
+    assert state["cached"] == [0, 1, 2, 3], "the gap is cached empty so it is counted"
+    assert state["finished"], "one bad chunk must not strand the session"
+    assert 1 not in [c.source for c in scheduler.all_cues()], \
+        "a skipped chunk must contribute no cues"
+
+
+def test_a_skipped_chunks_warning_survives_later_successes():
+    """The error is cleared on every success, which would have made the next
+    good chunk silently erase the notice that a chunk was dropped."""
+    def run_chunk(idx, t0, t1):
+        if idx == 0:
+            raise RuntimeError("unrecoverable")
+        return [Cue(t0, t1, f"chunk {idx}")]
+
+    scheduler = LookaheadScheduler(make_chunks(3), run_chunk, poll=0.01)
+    scheduler.start()
+    assert wait_until(lambda: scheduler.state()["finished"], timeout=8.0)
+    scheduler.stop()
+    assert "chunk 0" in scheduler.state()["error"]
+    assert scheduler.state()["error"] is not None
 
 
 def test_seek_scans_forward_before_backfilling_behind():
@@ -299,3 +482,159 @@ def test_reflow_handles_cjk_without_spaces():
     cues = reflow_cues([Cue(0.0, 6.0, "あ" * 100)])
     assert len(cues) >= 2
     assert all(len(line) <= 42 for c in cues for line in c.source.split("\n"))
+
+
+# ------------------------------------------------------- chapter frame grabs
+
+
+def test_frame_jpeg_serves_from_cache_without_touching_ffmpeg(monkeypatch, tmp_path):
+    """Hover previews re-ask for the same chapter, so a cached frame must not
+    re-run ffmpeg."""
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"not really a video")
+    root = tmp_path / "frames"
+    root.mkdir()
+    (root / "12500.jpg").write_bytes(b"\xff\xd8already here")
+
+    def explode(*args, **kwargs):
+        raise AssertionError("ffmpeg must not run on a cache hit")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    assert frame_jpeg(video, 12.5, root).read_bytes() == b"\xff\xd8already here"
+
+
+def test_frame_jpeg_extracts_once_and_seeks_before_the_input(monkeypatch, tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"")
+    root = tmp_path / "frames"
+    runs = []
+
+    def fake_run(args, **kwargs):
+        runs.append(args)
+        return SimpleNamespace(stdout=b"\xff\xd8fresh", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert frame_jpeg(video, 12.504, root).read_bytes() == b"\xff\xd8fresh"
+    frame_jpeg(video, 12.504, root)  # second hover: cached
+    assert len(runs) == 1, runs
+    # -ss must precede -i or ffmpeg decodes from the start of the file, which on
+    # a two-hour video is the difference between 70ms and minutes.
+    assert runs[0].index("-ss") < runs[0].index("-i")
+    assert "-frames:v" in runs[0]
+    assert runs[0][runs[0].index("-ss") + 1] == "12.504"
+
+
+def test_frame_jpeg_is_none_when_there_is_no_picture(monkeypatch, tmp_path):
+    """Audio-only input: the caller draws a placeholder rather than a broken img."""
+    video = tmp_path / "a.m4a"
+    video.write_bytes(b"")
+    root = tmp_path / "frames"
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=b"", returncode=1)
+    )
+    assert frame_jpeg(video, 3.0, root) is None
+
+
+# ------------------------------------------------------------ cache management
+
+
+def build_cache(root: Path, keys: dict) -> Path:
+    """Lay out a cache the way the app does, one entry per key.
+
+    Everything for a key is spread over a flat `<key>.f32`/`.json`/`.mp4`,
+    `frames/<key>/`, and `tts/<key>/<voice>/`, so a helper that only looked at
+    one shape would badly misreport the real footprint. `age` is seconds ago the
+    key was written, which is what eviction sorts on.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    for key, (size, age) in keys.items():
+        (root / f"{key}.f32").write_bytes(b"x" * size)
+        (root / f"{key}.json").write_text("{}")
+        frames = root / "frames" / key
+        frames.mkdir(parents=True, exist_ok=True)
+        (frames / "1000.jpg").write_bytes(b"x" * (size // 2))
+        voice = root / "tts" / key / "af_heart"
+        voice.mkdir(parents=True, exist_ok=True)
+        (voice / "2000.wav").write_bytes(b"x" * (size // 4))
+        when = time.time() - age
+        for path in [root / f"{key}.f32", root / f"{key}.json",
+                     frames, voice]:
+            os.utime(path, (when, when))
+    return root
+
+
+def test_cache_entries_sums_every_shape_of_one_key(monkeypatch, tmp_path):
+    root = build_cache(tmp_path / "c", {"aaaa": (1000, 10)})
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    entries = cache_entries()
+    assert list(entries) == ["aaaa"]
+    # f32 1000 + json 2 + frames 500 + tts 250
+    assert entries["aaaa"][1] == 1752
+
+
+def test_prune_evicts_the_oldest_key_first(monkeypatch, tmp_path):
+    root = build_cache(tmp_path / "c", {
+        "oldest": (4000, 500),   # 4000 + 2 + 2000 + 1000 = 7002
+        "middle": (4000, 300),
+        "newest": (4000, 10),
+    })
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    result = prune_cache(max_mb=0.018)  # 18874 bytes: room for one of three
+    assert result["evicted"] == ["oldest"]
+    assert sorted(p.name for p in root.iterdir() if p.is_file()) == [
+        "middle.f32", "middle.json", "newest.f32", "newest.json"]
+    assert not (root / "frames" / "oldest").exists(), "a pruned key's frames must go too"
+    assert not (root / "tts" / "oldest").exists()
+    assert result["freed"] == 7002
+    assert result["bytes"] == 2 * 7002  # .f32 4000 + .json 2 + frames 2000 + tts 1000
+
+
+def test_prune_never_touches_the_live_sessions_key(monkeypatch, tmp_path):
+    """The active video's PCM may be an open memmap and its remux may still be
+    being written. Unlinking those does not fail loudly -- the mapping survives
+    -- so the damage surfaces later as missing cues, not as an error."""
+    root = build_cache(tmp_path / "c", {"live": (4000, 500), "stale": (4000, 300)})
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    result = prune_cache(protect={"live"}, max_mb=0.001)  # budget nothing fits
+    assert result["evicted"] == ["stale"]
+    assert (root / "live.f32").is_file()
+    assert (root / "frames" / "live").is_dir()
+    assert not (root / "stale.f32").exists()
+
+
+def test_prune_keeps_everything_that_already_fits(monkeypatch, tmp_path):
+    root = build_cache(tmp_path / "c", {"a": (100, 10), "b": (100, 20)})
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    result = prune_cache(max_mb=10)
+    assert result["evicted"] == []
+    assert result["freed"] == 0
+    assert len(cache_entries()) == 2
+
+
+def test_prune_is_a_no_op_when_the_budget_is_disabled(monkeypatch, tmp_path):
+    root = build_cache(tmp_path / "c", {"a": (9000, 10)})
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    result = prune_cache(max_mb=0)
+    assert result["evicted"] == []
+    assert (root / "a.f32").is_file()
+
+
+def test_prune_survives_a_cache_dir_that_does_not_exist(monkeypatch, tmp_path):
+    monkeypatch.setattr("pipeline.CACHE_DIR", tmp_path / "nope")
+    assert cache_entries() == {}
+    assert prune_cache(max_mb=1)["evicted"] == []
+    assert remove_cache_key("aaaa") == 0
+
+
+def test_a_partial_remux_is_collected_as_its_own_key_group(monkeypatch, tmp_path):
+    """A `.part.mp4` left by a killed run belongs to its key, so it is either
+    kept with that video or collected with it -- never mistaken for a key of
+    its own."""
+    root = tmp_path / "c"
+    root.mkdir()
+    (root / "abcd.part.mp4").write_bytes(b"x" * 500)
+    monkeypatch.setattr("pipeline.CACHE_DIR", root)
+    assert list(cache_entries()) == ["abcd"]
+    remove_cache_key("abcd")
+    assert list(root.iterdir()) == []

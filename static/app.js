@@ -14,6 +14,9 @@ const el = {
   speed: $("speed"),
   speedMenu: $("speed-menu"),
   captions: $("captions"),
+  speak: $("speak"),
+  voice: $("voice"),
+  voiceWrap: $("voice-wrap"),
   pip: $("pip"),
   fullscreen: $("fullscreen"),
   cancel: $("cancel"),
@@ -25,6 +28,20 @@ const el = {
   fileName: $("file-name"),
   session: $("session"),
   transcript: $("transcript"),
+  chapters: $("chapters"),
+  chapterList: $("chapter-list"),
+  chapterNote: $("chapter-note"),
+  chLane: $("ch-lane"),
+  chNow: $("ch-now"),
+  chNowT: $("ch-now-t"),
+  chNowX: $("ch-now-x"),
+  chRail: $("ch-rail"),
+  chRailTrack: $("ch-rail-track"),
+  chaptersBtn: $("chapters-btn"),
+  chPreview: $("ch-preview"),
+  chPreviewImg: $("ch-preview-img"),
+  chPreviewTitle: $("ch-preview-title"),
+  chPreviewTime: $("ch-preview-time"),
   panelIntro: $("panel-intro"),
   panelSkeleton: $("panel-skeleton"),
   panelEmpty: $("panel-empty"),
@@ -79,6 +96,16 @@ const S = {
   playback: null,
   prep: null,
   captions: true,
+  speak: false,
+  tts: null,
+  chapters: null,
+  chapterRows: new Map(),
+  chapterSegs: new Map(),
+  chapterCount: 0,
+  activeChapter: null,
+  chapterModel: "",
+  railOpen: false,
+  previewTimer: 0,
   speed: 1,
   helpOpen: false,
   retry: 0,
@@ -106,6 +133,7 @@ function connect() {
     if (msg.type === "hello") {
       S.lookahead = msg.lookahead;
       if (!msg.native_picker) showFallback();
+      if (msg.chapters) S.chapterModel = msg.chapters.model || "";
       if (msg.media) restore(msg.media);
     } else if (msg.type === "cues") {
       addCues(msg.items);
@@ -146,6 +174,7 @@ function addCues(items) {
   }
   if (!fresh.length) return;
   S.cues.sort((a, b) => a.start - b.start);
+  if (S.speak) ttsSchedule(false);
   fresh.sort((a, b) => a.start - b.start);
 
   const nearBottom =
@@ -236,6 +265,267 @@ function row(cue) {
   return li;
 }
 
+// -------------------------------------------------------------- chapters
+
+// The server buckets the transcript into windows and has a local model pick the
+// cuts inside each one, so chapters arrive a window after you watch them rather
+// than all at once at the end. The strip says why it is empty instead of
+// showing a blank box.
+function renderChapters(state) {
+  const c = state.chapters;
+  if (!c) return;
+  if (c.model) S.chapterModel = c.model;
+  S.chapters = c;
+  const list = Array.isArray(c.chapters) ? c.chapters : [];
+  // The state pump ticks twice a second; only a new chapter justifies a rebuild.
+  if (list.length !== S.chapterCount) {
+    S.chapterCount = list.length;
+    S.chapterRows = new Map();
+    el.chapterList.replaceChildren(...list.map(chapterRow));
+    buildChapterLane(list);
+    buildChapterRail(list);
+    S.activeChapter = null;
+  }
+  const note = chapterNote(c);
+  el.chapterNote.textContent = note;
+  el.chapterNote.hidden = !note;
+  el.chapters.hidden = !S.hasMedia;
+}
+
+function chapterNote(state) {
+  if (state.error) return state.error;
+  if (!state.enabled) {
+    return `start ollama and pull ${S.chapterModel || "a model"} to get chapters`;
+  }
+  if (!S.chapterCount) return `first chapter after ${clock(state.every || 300)}`;
+  return "";
+}
+
+function chapterRow(ch, i, list) {
+  const li = document.createElement("li");
+  li.tabIndex = 0;
+  // The thumbnail is what tells a chapter apart from a subtitle at a glance.
+  const thumb = document.createElement("img");
+  thumb.alt = "";
+  thumb.loading = "lazy";
+  thumb.src = frameURL(ch.start);
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = clock(ch.start);
+  const text = document.createElement("span");
+  text.className = "x";
+  text.textContent = ch.title;
+  li.append(thumb, time, text);
+  li.addEventListener("click", () => seekTo(ch.start + 0.01));
+  li.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      seekTo(ch.start + 0.01);
+    }
+  });
+  hoverPreview(li, ch, chapterEnd(list, i));
+  S.chapterRows.set(ch.start, li);
+  return li;
+}
+
+const frameURL = (t) => `/api/frame?start=${t.toFixed(2)}`;
+
+// Where a chapter stops: the next one starts, or the end of the video.
+function chapterEnd(list, i) {
+  if (i + 1 < list.length) return list[i + 1].start;
+  return S.duration || list[i].start;
+}
+
+// Chapters on the timeline. Segment widths are proportional to each chapter's
+// span, so the shape of the video reads at a glance and every segment is wide
+// enough to be a hover target.
+function buildChapterLane(list) {
+  const duration = S.duration || 0;
+  S.chapterSegs = new Map();
+  el.chLane.replaceChildren();
+  if (!list.length || !duration) {
+    el.chLane.hidden = true;
+    return;
+  }
+  for (let i = 0; i < list.length; i++) {
+    const start = list[i].start;
+    const end = i + 1 < list.length ? list[i + 1].start : duration;
+    const seg = document.createElement("div");
+    seg.className = "ch-seg";
+    seg.style.flexGrow = String(Math.max(1, end - start));
+    // A click on a chapter means "go to the chapter", not "scrub to this pixel",
+    // so keep it out of the meter's own pointer handling.
+    seg.addEventListener("pointerdown", (event) => event.stopPropagation());
+    seg.addEventListener("click", (event) => {
+      event.stopPropagation();
+      seekTo(start + 0.01);
+    });
+    hoverPreview(seg, list[i], end);
+    S.chapterSegs.set(start, seg);
+    el.chLane.appendChild(seg);
+  }
+  el.chLane.hidden = false;
+}
+
+// The fullscreen chapter surface. Fullscreen hides the panel *and* the cursor,
+// so a hover-only affordance is unreachable there; this is a real list of
+// thumbnail cards you open deliberately, and it survives the transport's
+// auto-hide because it is navigation rather than transport.
+function buildChapterRail(list) {
+  S.chapterCards = new Map();
+  el.chRailTrack.replaceChildren();
+  for (let i = 0; i < list.length; i++) {
+    const start = list[i].start;
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "ch-card";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.src = frameURL(start);
+    const meta = document.createElement("span");
+    meta.className = "ch-card-meta";
+    const time = document.createElement("b");
+    time.textContent = clock(start);
+    const text = document.createElement("span");
+    text.textContent = list[i].title;
+    meta.append(time, text);
+    card.append(img, meta);
+    card.setAttribute("aria-label", `Seek to ${clock(start)}, ${list[i].title}`);
+    card.addEventListener("click", () => seekTo(start + 0.01));
+    S.chapterCards.set(start, card);
+    el.chRailTrack.appendChild(card);
+  }
+  el.chaptersBtn.hidden = !list.length;
+  setRail(S.railOpen && list.length > 0);
+}
+
+function setRail(open) {
+  S.railOpen = open && S.chapterCount > 0;
+  el.chRail.hidden = !S.railOpen;
+  el.chaptersBtn.setAttribute("aria-pressed", String(S.railOpen));
+  el.chaptersBtn.title = S.railOpen ? "Hide chapters" : "Chapters";
+  if (S.railOpen) S.chapterCards.get(S.activeChapter)?.scrollIntoView({ block: "nearest", inline: "center" });
+}
+
+el.chaptersBtn.addEventListener("click", () => setRail(!S.railOpen));
+
+// Hovering either surface (timeline segment or panel row) shows the same card:
+// the frame the chapter starts on, its title, and how far it runs. Rail cards
+// already show their own frame, so they opt out.
+function hoverPreview(node, ch, end) {
+  node.addEventListener("pointerenter", () => showPreview(node, ch, end));
+  node.addEventListener("pointerleave", scheduleHidePreview);
+  node.addEventListener("focus", () => showPreview(node, ch, end));
+  node.addEventListener("blur", scheduleHidePreview);
+}
+
+function showPreview(node, ch, end) {
+  clearTimeout(S.previewTimer);
+  if (!ch) return hidePreview();
+  const stop = end ?? S.duration ?? ch.start;
+  el.chPreviewTitle.textContent = ch.title;
+  el.chPreviewTime.textContent = `${clock(ch.start)} – ${clock(stop)}`;
+  // The img is only fetched once a hover asks for it, and /api/frame is
+  // immutable per time, so re-hovering is a cache hit.
+  if (el.chPreviewImg.dataset.start !== String(ch.start)) {
+    el.chPreviewImg.dataset.start = String(ch.start);
+    el.chPreviewImg.src = frameURL(ch.start);
+  }
+  el.chPreview.hidden = false;
+
+  // Absolute inside .frame, so measure against the frame's own box and keep the
+  // card inside it on both axes.
+  const host = el.frame.getBoundingClientRect();
+  const box = el.chPreview.getBoundingClientRect();
+  const from = node.getBoundingClientRect();
+  const pad = 10;
+  const left = Math.max(pad, Math.min(
+    from.left - host.left + from.width / 2 - box.width / 2,
+    host.width - box.width - pad
+  ));
+  // Lane segments sit low in the frame, so the card goes above them; a panel row
+  // is off to the side, so the card centres beside it instead.
+  const above = from.top < host.top + host.height / 2;
+  const top = above
+    ? from.top - host.top - box.height - 10
+    : from.top - host.top + (from.height - box.height) / 2;
+  el.chPreview.style.left = `${left}px`;
+  el.chPreview.style.top = `${Math.max(pad, Math.min(top, host.height - box.height - pad))}px`;
+}
+
+function scheduleHidePreview() {
+  clearTimeout(S.previewTimer);
+  S.previewTimer = setTimeout(hidePreview, 120);
+}
+
+function hidePreview() {
+  el.chPreview.hidden = true;
+  el.chPreviewImg.removeAttribute("src");
+  delete el.chPreviewImg.dataset.start;
+}
+
+function clearChapters() {
+  S.chapters = null;
+  S.chapterRows = new Map();
+  S.chapterSegs = new Map();
+  S.chapterCards = new Map();
+  S.chapterCount = 0;
+  S.activeChapter = null;
+  S.railOpen = false;
+  clearTimeout(S.previewTimer);
+  hidePreview();
+  el.chLane.replaceChildren();
+  el.chLane.hidden = true;
+  el.chRailTrack.replaceChildren();
+  el.chRail.hidden = true;
+  el.chaptersBtn.hidden = true;
+  el.chaptersBtn.setAttribute("aria-pressed", "false");
+  el.chNow.hidden = true;
+  el.chNowT.textContent = "";
+  el.chNowX.textContent = "";
+  el.chapterList.replaceChildren();
+  el.chapterNote.textContent = "";
+  el.chapterNote.hidden = true;
+  el.chapters.hidden = true;
+}
+
+// The chapter covering `t` is the last one that starts before it. Guarded by the
+// cached key so a 60fps tick only touches the DOM when the chapter changes.
+function setActiveChapter(t) {
+  let hit = null;
+  for (const ch of S.chapters?.chapters || []) {
+    if (ch.start > t + 0.25) break;
+    hit = ch;
+  }
+  const key = hit ? hit.start : null;
+  if (key === S.activeChapter) return;
+  clearActive(S.activeChapter);
+  S.activeChapter = key;
+  if (hit) {
+    el.chNow.hidden = false;
+    el.chNowT.textContent = clock(hit.start);
+    el.chNowX.textContent = hit.title;
+  } else {
+    el.chNow.hidden = true;
+  }
+  paintActive(key, S.chapterRows);
+  paintActive(key, S.chapterSegs);
+  paintActive(key, S.chapterCards);
+}
+
+function paintActive(key, map) {
+  if (key !== null && key !== undefined) map?.get(key)?.classList.add("active");
+}
+
+function clearActive(key) {
+  if (key === null || key === undefined) return;
+  S.chapterRows.get(key)?.classList.remove("active");
+  S.chapterSegs.get(key)?.classList.remove("active");
+  S.chapterCards.get(key)?.classList.remove("active");
+}
+
 function backfill() {
   fetch("/api/cues")
     .then((r) => r.json())
@@ -262,6 +552,7 @@ function clearCues() {
   S.finished = false;
   el.transcript.replaceChildren();
   el.meterCells.replaceChildren();
+  clearChapters();
   showPanel(null);
   el.export.hidden = true;
   el.save.hidden = true;
@@ -334,9 +625,9 @@ el.meter.addEventListener("pointercancel", endDrag);
 function tick() {
   const t = el.video.currentTime;
   const idx = findCue(t);
+  const cue = idx >= 0 ? S.cues[idx] : null;
   if (idx >= 0 && S.captions) {
     S.hint = idx;
-    const cue = S.cues[idx];
     el.overlay.textContent = cue.target || cue.source;
     el.overlay.classList.add("show");
     setActive(cue.key);
@@ -349,6 +640,7 @@ function tick() {
     setActive(null);
   }
   if (!S.dragging) paintHead(t);
+  if (S.chapterCount) setActiveChapter(t);
   if (!el.video.paused) sendPlayhead(false);
   requestAnimationFrame(tick);
 }
@@ -367,6 +659,8 @@ function setActive(key) {
 function renderState(state) {
   if (state.playback) S.playback = state.playback;
   if (state.prep) S.prep = state.prep;
+  if (state.tts) renderTTS(state);
+  if (state.chapters) renderChapters(state);
   if (!S.hasMedia) {
     el.pulse.classList.remove("live", "done");
     if (S.phase === "opening") {
@@ -602,24 +896,194 @@ function hideControls() {
   if (!el.video.paused) el.frame.classList.remove("controls-on");
 }
 
+// --------------------------------------------------------- read-along (TTS)
+
+// The synthesiser sweeps ahead on its own (eagerly, with transcription), so this
+// side only has to keep a decoded buffer per cue and hand it to Web Audio at the
+// right moment. Web Audio rather than a second <audio> element because its
+// scheduling is sample-accurate, which is what keeps the dub locked to the
+// video across seeks, stalls and 0.5x-2x playback.
+const TTS_HORIZON = 15; // cue seconds to schedule ahead of the playhead
+const TTS_DUCK = 0.15;  // original-audio level while the translation speaks
+
+const A = {
+  ctx: null,
+  gen: 0,             // bump to void in-flight decodes after a voice change
+  buffers: new Map(),  // ms -> AudioBuffer
+  pending: new Map(),  // ms -> Promise, so a cue is never fetched twice
+  live: new Set(),     // sources currently sounding
+  scheduled: new Set(),
+  voice: null,         // voice the decoded buffers belong to
+};
+
+const duck = { active: false, base: 1 };
+
+function actx() {
+  if (!A.ctx) A.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (A.ctx.state === "suspended") A.ctx.resume();
+  return A.ctx;
+}
+
+const cueMs = (cue) => Math.round(cue.start * 1000);
+
+function ttsBuffer(cue, gen) {
+  const ms = cueMs(cue);
+  if (A.buffers.has(ms)) return Promise.resolve(A.buffers.get(ms));
+  if (A.pending.has(ms)) return A.pending.get(ms);
+  const p = fetch(`/api/tts/audio?start=${cue.start}`)
+    .then((r) => (r.ok ? r.arrayBuffer() : null))
+    .then((buf) => (buf ? actx().decodeAudioData(buf) : null))
+    .then((decoded) => {
+      if (!decoded || gen !== A.gen) return null; // voice changed mid-decode
+      A.buffers.set(ms, decoded);
+      return decoded;
+    })
+    .catch(() => null)
+    .finally(() => A.pending.delete(ms));
+  A.pending.set(ms, p);
+  return p;
+}
+
+function ttsPlay(cue, buffer, at, head, rate) {
+  const ms = cueMs(cue);
+  if (A.scheduled.has(ms)) return;
+  A.scheduled.add(ms);
+  // Seeked into the middle of a line: skip the part already spoken instead of
+  // restarting the whole cue from its first word.
+  const skip = Math.max(0, (head - cue.start) * rate);
+  if (skip >= buffer.duration) return;
+  const src = actx().createBufferSource();
+  src.buffer = buffer;
+  src.connect(actx().destination);
+  src.start(at + Math.max(0, (cue.start - head) / rate), skip);
+  A.live.add(src);
+  src.onended = () => A.live.delete(src);
+}
+
+function ttsStop() {
+  for (const src of A.live) {
+    try {
+      src.stop();
+    } catch {}
+  }
+  A.live.clear();
+  A.scheduled.clear();
+}
+
+function ttsSchedule(reset) {
+  if (reset) ttsStop();
+  if (!S.speak || !S.hasMedia) return;
+  const head = el.video.currentTime;
+  const rate = el.video.playbackRate || 1;
+  for (const cue of S.cues) {
+    if (cue.start > head + TTS_HORIZON) break;
+    if (cue.end < head) continue; // already past
+    const have = A.buffers.get(cueMs(cue));
+    if (have) {
+      ttsPlay(cue, have, actx().currentTime, head, rate);
+    } else {
+      // 404 just means the synthesiser hasn't reached this cue yet; the next
+      // pass retries it, which is how audio fills in as it lands.
+      ttsBuffer(cue, A.gen).then((buf) => {
+        if (buf && S.speak) {
+          ttsPlay(cue, buf, actx().currentTime, el.video.currentTime,
+                  el.video.playbackRate || 1);
+        }
+      });
+    }
+  }
+}
+
+// Full re-anchor: the playhead moved, so everything must be re-timed.
+const ttsAnchor = () => ttsSchedule(true);
+
+function ttsReset() {
+  ttsStop();
+  A.gen += 1;
+  A.buffers.clear();
+  A.pending.clear();
+}
+
+function applyDuck() {
+  duck.active = S.speak;
+  el.video.volume = duck.active ? duck.base * TTS_DUCK : duck.base;
+  syncVolume();
+}
+
+function renderTTS(state) {
+  const t = state.tts;
+  if (!t) return;
+  const was = S.speak;
+  const grew = (S.tts?.spoken ?? 0) < (t.spoken ?? 0);
+  S.tts = t;
+  S.speak = !!t.enabled;
+  el.speak.setAttribute("aria-pressed", String(S.speak));
+  el.voiceWrap.hidden = !S.speak;
+  el.speak.dataset.phase = t.error ? "error" : t.enabled && !t.ready ? "loading" : "on";
+  el.speak.title = t.error
+    ? `Read-aloud failed: ${t.error}`
+    : t.enabled && !t.ready
+      ? "Loading the voice model…"
+      : "Read the translation aloud (R)";
+
+  if (S.speak && el.voice.options.length !== (t.voices || []).length) {
+    el.voice.replaceChildren(
+      ...t.voices.map((v) => new Option(v.replace(/^[a-z]{2}_/, "").replace(/_/g, " "), v))
+    );
+  }
+  if (t.voice) el.voice.value = t.voice;
+
+  if (A.voice && t.voice && t.voice !== A.voice) {
+    ttsReset(); // a different voice caches under a different directory
+  }
+  A.voice = t.voice;
+
+  if (was !== S.speak) {
+    if (S.speak) {
+      duck.base = el.video.muted ? duck.base : el.video.volume;
+      actx(); // unlock audio on the gesture that turned it on
+    } else {
+      ttsReset();
+    }
+    applyDuck();
+  }
+  // Extend rather than re-anchor: a re-anchor would restart whatever is
+  // mid-sentence every tick. New audio only ever needs adding.
+  if (S.speak && (was !== S.speak || grew)) ttsSchedule(was !== S.speak);
+}
+
+async function setSpeak(on) {
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on, voice: el.voice.value || undefined }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    renderTTS({ tts: await res.json() });
+  } catch (e) {
+    setStatus(`Read-aloud: ${e.message}`, true);
+  }
+}
+
 function syncVolume() {
-  const muted = el.video.muted || el.video.volume === 0;
+  const level = el.video.muted ? 0 : duck.active ? duck.base : el.video.volume;
+  const muted = el.video.muted || level === 0;
   el.mute.classList.toggle("muted", muted);
-  const level = el.video.muted ? 0 : el.video.volume;
   el.volume.value = String(level);
   el.volume.setAttribute("aria-valuetext", `${Math.round(level * 100)}%`);
 }
 
 function setVolume(v) {
   el.video.muted = false;
-  el.video.volume = clamp01(Number(v));
-  syncVolume();
+  duck.base = clamp01(Number(v));
+  applyDuck();
 }
 
 function toggleMute() {
   el.video.muted = !el.video.muted;
-  if (!el.video.muted && el.video.volume === 0) el.video.volume = 0.5;
-  syncVolume();
+  if (!el.video.muted && duck.base === 0) duck.base = 0.5;
+  applyDuck();
 }
 
 function setSpeed(rate) {
@@ -764,6 +1228,7 @@ function restore(media) {
 
 function resetSession() {
   clearCues();
+  ttsReset();
   S.hasMedia = false;
   S.duration = 0;
   S.mediaInfo = null;
@@ -880,6 +1345,8 @@ el.fwd10.onclick = () => seekTo(el.video.currentTime + 10);
 el.mute.onclick = toggleMute;
 el.volume.oninput = () => setVolume(el.volume.value);
 el.captions.onclick = toggleCaptions;
+el.speak.onclick = () => setSpeak(!S.speak);
+el.voice.onchange = () => setSpeak(S.speak);
 el.pip.onclick = togglePiP;
 el.fullscreen.onclick = toggleFullscreen;
 el.cancel.onclick = cancelOpen;
@@ -916,11 +1383,14 @@ el.video.addEventListener("play", () => {
   el.play.classList.add("playing");
   el.play.setAttribute("aria-label", "Pause");
   showControls();
+  actx();
+  ttsAnchor();
 });
 el.video.addEventListener("pause", () => {
   el.play.classList.remove("playing");
   el.play.setAttribute("aria-label", "Play");
   showControls();
+  ttsStop(); // don't keep speaking over a paused frame
 });
 
 document.addEventListener("fullscreenchange", () => {
@@ -946,7 +1416,9 @@ el.video.addEventListener("seeked", () => {
   S.hint = 0;
   sendPlayhead(true);
   backfill();
+  ttsAnchor();
 });
+el.video.addEventListener("ratechange", ttsAnchor);
 
 const MEDIA_ERRORS = {
   1: "loading was aborted",
@@ -1071,6 +1543,9 @@ document.addEventListener("keydown", (event) => {
       } else if (lower === "p") {
         event.preventDefault();
         togglePiP();
+      } else if (lower === "r") {
+        event.preventDefault();
+        if (S.hasMedia) setSpeak(!S.speak);
       } else if (/^[0-9]$/.test(key)) {
         event.preventDefault();
         seekTo((Number(key) / 10) * S.duration);

@@ -520,6 +520,49 @@ video { width: 100%; height: 100%; display: block; background: #000; }
   color: var(--fg-faint);
 }
 .clock { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+
+/* Chapters on the timeline. A lane rather than tick marks: segment widths are
+   proportional to each chapter's span, so the shape of the video reads at a
+   glance and each segment is big enough to hover. */
+.ch-lane {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin: -3px 0;
+}
+.ch-lane[hidden] { display: none; }
+.ch-lane .ch-seg {
+  flex: 1 1 0;
+  min-width: 3px;
+  border-radius: 100px;
+  background: var(--fg-dim);
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 160ms var(--ease-out), background-color 160ms var(--ease-out);
+}
+.ch-lane .ch-seg:hover { opacity: 1; background: var(--fg); }
+.ch-lane .ch-seg.active { opacity: 1; background: var(--accent); }
+
+/* Labels the lane. The segments are too small to letter, so the chapter you're
+   in is named in words underneath — one line, always current, never a legend. */
+.ch-now {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-height: 15px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ch-now[hidden] { display: none; }
+.ch-now b {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ch-now span { overflow: hidden; text-overflow: ellipsis; }
 .note { font-size: 12.5px; letter-spacing: -0.002em; font-variant-numeric: tabular-nums; }
 .note.ahead { color: var(--accent); font-weight: 560; }
 .note.behind { color: #ffb020; }
@@ -570,6 +613,75 @@ video { width: 100%; height: 100%; display: block; background: #000; }
 
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); cursor: pointer; }
 .toggle input { accent-color: var(--accent); margin: 0; }
+
+/* Chapter strip: fixed above the transcript so both stay on screen. Capped so a
+   24-chapter film doesn't crowd out the lines the strip points at. */
+.chapters {
+  flex: 0 0 auto;
+  max-height: 32vh;
+  padding: 10px 8px 2px;
+  border-bottom: 1px solid var(--hairline);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chapters[hidden] { display: none; }
+.ch-head { padding: 0 9px 7px; }
+.chapters h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+/* An explanation, not a title suffix, so it gets its own line and its own type. */
+.ch-note {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg-faint);
+  opacity: 0.85;
+}
+.ch-note[hidden] { display: none; }
+
+.chapter-list { list-style: none; margin: 0; padding: 0; }
+.chapter-list li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--fg-dim);
+  animation: row-in 260ms var(--ease-out) both;
+}
+/* A thumbnail is what separates a chapter from a subtitle at a glance. */
+.chapter-list img {
+  flex: 0 0 auto;
+  width: 56px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--track);
+}
+.chapter-list li:hover { background: var(--track); color: var(--fg); }
+.chapter-list li.active { background: var(--accent-soft); color: var(--fg); }
+.chapter-list li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chapter-list .t {
+  flex: 0 0 42px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chapter-list .x {
+  min-width: 0;
+  font-size: 13px;
+  letter-spacing: -0.004em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
 
 .transcript {
   list-style: none;
@@ -715,6 +827,8 @@ video { width: 100%; height: 100%; display: block; background: #000; }
 @media (prefers-reduced-motion: reduce) {
   .overlay, .transcript li, .empty { transform: none !important; }
   .transcript li { animation: none; }
+  .chapter-list li, .ch-preview { animation: none; }
+  .ch-card { transition: none; }
   .pulse.live { animation: none; opacity: 1; }
   .wait { animation: none; opacity: 0.7; }
   .steps li.active::before { animation: none; }
@@ -735,6 +849,9 @@ video { width: 100%; height: 100%; display: block; background: #000; }
 @media (max-width: 900px) {
   main { flex-direction: column; }
   .panel { width: auto; max-width: none; min-width: 0; border-left: 0; border-top: 1px solid var(--hairline); max-height: 40%; }
+  /* The panel itself only gets 40% of the viewport here, so the strip has to
+     give way rather than squeeze the transcript out of existence. */
+  .chapters { max-height: 14vh; }
 }
 
 /* ------------------------------------------------------- player controls */
@@ -780,6 +897,50 @@ video { width: 100%; height: 100%; display: block; background: #000; }
   padding: 0 8px;
   font-size: 12.5px;
   font-weight: 560;
+}
+/* CC and Speak are toggles, so "on" has to be visible and not just announced. */
+.ctl-btn[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.22);
+}
+#speak[data-phase="loading"] {
+  color: var(--accent);
+  animation: speak-pulse 1.1s ease-in-out infinite;
+}
+#speak[data-phase="error"] {
+  color: #ff8a80;
+}
+@keyframes speak-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.voice-wrap { display: inline-flex; }
+.ctl-select {
+  height: 34px;
+  max-width: 116px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ctl-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ctl-select option { color: #111; }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #speak[data-phase="loading"] { animation: none; }
 }
 
 #play .i-pause { display: none; }
@@ -850,8 +1011,133 @@ video { width: 100%; height: 100%; display: block; background: #000; }
 .stage:fullscreen .frame { border-radius: 0; box-shadow: none; }
 .stage:fullscreen .meter { padding: 6px 14px 10px; }
 .stage:fullscreen .status { display: none; }
+/* Fullscreen has no panel and no cursor, so the rail is the only chapter
+   surface there -- give it room and let the lane sit right under the video. */
+.stage:fullscreen .ch-lane { height: 8px; }
+.stage:fullscreen .ch-now { font-size: 13px; padding-bottom: 2px; }
+.stage:fullscreen .ch-rail { bottom: 84px; padding-bottom: 4px; }
+.stage:fullscreen .ch-card { width: 176px; }
+.stage:fullscreen .ch-card-meta span { font-size: 13px; }
 
 #cancel { margin-top: 14px; }
+
+/* ---------------------------------------------- chapters inside the frame */
+
+/* The hover card. Absolute inside .frame so it rides into native fullscreen,
+   is clipped by the frame's rounded corners, and paints over the caption and
+   the transport. It is not position:fixed -- that would be trapped by
+   .panel's backdrop-filter if it lived outside .frame. */
+.ch-preview {
+  position: absolute;
+  z-index: 5;
+  width: 216px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  animation: ch-pop 140ms var(--ease-out) both;
+}
+.ch-preview[hidden] { display: none; }
+@keyframes ch-pop {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ch-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--track);
+}
+.ch-preview-body { padding: 7px 9px 8px; }
+.ch-preview-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 560;
+  letter-spacing: -0.004em;
+  color: var(--fg);
+  /* A runaway title must not grow the card past its fixed width. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ch-preview-time {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The chapter rail: the surface fullscreen actually needs, because fullscreen
+   hides the panel and the cursor along with it. Toggle-driven rather than
+   hover-driven, and it deliberately does NOT follow the transport's 2.6s
+   auto-hide -- it's navigation, not transport, so it stays until dismissed. */
+.ch-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 68px;
+  z-index: 5;
+  padding: 4px 14px 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
+}
+.ch-rail[hidden] { display: none; }
+.ch-rail-track {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.ch-rail-track::-webkit-scrollbar { display: none; }
+
+.ch-card {
+  flex: 0 0 auto;
+  width: 148px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms var(--ease-out), border-color 180ms var(--ease-out);
+}
+.ch-card:hover { transform: translateY(-3px); border-color: rgba(255, 255, 255, 0.5); }
+.ch-card.active { border-color: var(--accent); }
+.ch-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #111;
+}
+.ch-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px 8px;
+}
+.ch-card-meta b {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.ch-card-meta span {
+  font-size: 12px;
+  line-height: 1.28;
+  letter-spacing: -0.004em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 /* ---------------------------------------------------------- help dialog */
 

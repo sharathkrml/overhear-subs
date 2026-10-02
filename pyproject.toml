@@ -5,6 +5,9 @@ description = "Look-ahead live transcription for local video on Apple Silicon"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "mlx-whisper>=0.4.3",
+    "mlx-audio>=0.2.0",
+    # Kokoro's grapheme-to-phoneme step. Needs espeak-ng (brew) on disk.
+    "misaki[en]>=0.9",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "numpy>=1.26",

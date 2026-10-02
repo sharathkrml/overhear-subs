@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -18,9 +19,26 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import backends
-from pipeline import LOOKAHEAD, VIDEO_EXT, LookaheadScheduler, PlaybackPrep, build_media
+import pipeline
+from pipeline import (
+    CACHE_DIR,
+    LOOKAHEAD,
+    VIDEO_EXT,
+    Chapterer,
+    LookaheadScheduler,
+    PlaybackPrep,
+    TTSSynthesizer,
+    _cache_key,
+    build_media,
+    chapter_window,
+    frame_jpeg,
+)
 
 STATIC = Path(__file__).parent / "static"
+
+# Off by default: the model is a ~350 MB one-time download, and a session that
+# never asks for read-along shouldn't pay for it.
+TTS_ON = os.environ.get("LT_TTS", "0") not in ("0", "", "false", "no")
 
 log = logging.getLogger("overhear-subs")
 
@@ -33,10 +51,45 @@ def _warm_backend() -> None:
         log.exception("model warm-up failed; it will load lazily on first use")
 
 
+def _warm_tts() -> None:
+    """Load Kokoro + espeak off the request thread, then backfill every cue
+    already transcribed so enabling mid-playback isn't silent for a chunk."""
+    try:
+        backends.get_tts().warm()
+    except Exception:
+        log.exception("TTS warm-up failed; it will retry on the next cue")
+    tts, scheduler = session.tts, session.scheduler
+    if tts and tts.enabled and scheduler:
+        tts.submit(scheduler.all_cues())
+
+
+def _prune_cache() -> None:
+    """Hold the cache to its byte budget. Runs at boot and after every open:
+    entries are keyed by file identity, so re-editing a video orphans its whole
+    footprint and nothing else would ever reclaim it."""
+    try:
+        protect = {_cache_key(session.path)} if session.path else set()
+        result = pipeline.prune_cache(protect=protect)
+    except Exception:
+        # Housekeeping must never be the reason a video fails to open.
+        log.exception("cache prune failed")
+        return
+    if result["evicted"]:
+        # Warning, not info: logging is unconfigured here, so info never prints.
+        # This deletes real cached data, which the operator should see.
+        log.warning(
+            "cache: over the %.0f MB budget, evicted %d key(s) and freed %.1f MB "
+            "(now %.1f MB). Raise LT_CACHE_MAX or set it to 0 to keep everything.",
+            result["budget"], len(result["evicted"]), result["freed"] / 1e6,
+            result["bytes"] / 1e6,
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Backgrounded so the server can answer before a ~3 GB first-run download.
     threading.Thread(target=_warm_backend, daemon=True, name="warm-backend").start()
+    threading.Thread(target=_prune_cache, daemon=True, name="cache-prune").start()
     yield
 
 
@@ -54,6 +107,11 @@ async def _no_store_static(request, call_next):
 
 NATIVE_PICKER = sys.platform == "darwin" and shutil.which("osascript") is not None
 _PICK_LOCK = threading.Lock()
+# One open at a time. Two concurrent opens would run ffmpeg into the *same* temp
+# names -- the PCM cache is keyed by file identity and the remux writes
+# <key>.part.mp4 -- so the two runs clobber each other's output. The generation
+# guard stops the loser installing its session, but not it corrupting the cache.
+_OPEN_LOCK = threading.Lock()
 
 _VIDEO_TYPES = "{" + ", ".join(f'"{ext.lstrip(".")}"' for ext in sorted(VIDEO_EXT)) + "}"
 
@@ -104,6 +162,8 @@ class Session:
         self.path: Path | None = None
         self.playback: PlaybackPrep | None = None
         self.scheduler: LookaheadScheduler | None = None
+        self.tts: TTSSynthesizer | None = None
+        self.chapters: Chapterer | None = None
         self.prep: Prep | None = None
         self.clients: set[WebSocket] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -137,7 +197,39 @@ def _state_payload() -> dict:
         payload["playback"] = session.playback.state()
     if session.scheduler:
         payload.update(session.scheduler.state())
+    if session.tts:
+        payload["tts"] = session.tts.state()
+    if session.chapters:
+        payload["chapters"] = session.chapters.state()
     return payload
+
+
+def _tts_state() -> dict:
+    """Shape the client needs even before a media is open: is the feature
+    available, is the model resident yet, and what can be picked."""
+    state = session.tts.state() if session.tts else {
+        "enabled": False, "ready": False, "spoken": 0, "queued": 0, "error": None,
+    }
+    state.update(model=backends.TTS_MODEL, voice=backends.get_tts().voice,
+                 voices=list(backends.KokoroTTS.voices),
+                 sample_rate=backends.KokoroTTS.sample_rate)
+    return state
+
+
+def _chapters_state() -> dict:
+    """Shape the client needs even before a media is open: which model would do
+    the job, and whether it is actually there to be used.
+
+    Only the `hello` handshake and each open pay for the /api/tags round trip;
+    the 2 Hz state pump reads the cached `enabled` flag off the chapterer.
+    """
+    chapters = session.chapters
+    state = chapters.state() if chapters else {
+        "enabled": False, "every": chapter_window(0.0),
+        "chapters": [], "error": None,
+    }
+    state.update(model=backends.CHAPTER_MODEL, available=backends.get_llm().has_model())
+    return state
 
 
 async def broadcast(message: dict) -> None:
@@ -151,11 +243,34 @@ async def broadcast(message: dict) -> None:
         session.clients.discard(client)
 
 
-def _on_cues(idx: int, cues: list) -> None:
+def _log_broadcast_failure(fut) -> None:
+    """The cue fan-out runs on the loop via run_coroutine_threadsafe. Dropping
+    the future means a raised exception is never retrieved anywhere, so it just
+    disappears."""
+    if not fut.cancelled() and (exc := fut.exception()) is not None:
+        log.warning("cue broadcast failed: %r", exc)
+
+
+def _on_cues(idx: int, cues: list, gen: int | None = None) -> None:
+    # Feed the synthesiser from the scheduler's own callback: a chunk landing is
+    # the earliest moment its cues can be spoken.
+    #
+    # `gen` pins this callback to the session that created it. A whisper chunk can
+    # outlive `stop()`'s join, so without the check a cancelled video's cues land
+    # in the *next* session's queue and render as transcript rows under the wrong
+    # video. Only the session installer was generation-guarded; the completion
+    # callback was not.
+    if gen is not None and gen != _open_gen:
+        return
+    if session.tts:
+        session.tts.submit(cues)
+    if session.chapters:
+        session.chapters.submit(cues)
     if not session.loop or not session.clients:
         return
     payload = {"type": "cues", "items": [c.__dict__ for c in cues]}
-    asyncio.run_coroutine_threadsafe(broadcast(payload), session.loop)
+    asyncio.run_coroutine_threadsafe(broadcast(payload), session.loop)\
+        .add_done_callback(_log_broadcast_failure)
 
 
 async def _state_pump(client: WebSocket) -> None:
@@ -163,8 +278,13 @@ async def _state_pump(client: WebSocket) -> None:
         while True:
             await asyncio.sleep(0.5)
             await client.send_json({"type": "state", **_state_payload()})
+    except asyncio.CancelledError:
+        raise  # the socket closing cancels us; that is not an error
     except Exception:
-        pass
+        # A pump that dies here silently stops all state updates for this client
+        # -- progress, errors, TTS readiness -- with nothing in the log to
+        # explain it, so say something.
+        log.exception("state pump failed; the client will stop receiving updates")
 
 
 @app.websocket("/ws")
@@ -180,6 +300,8 @@ async def websocket(client: WebSocket) -> None:
                 "lookahead": LOOKAHEAD,
                 "native_picker": NATIVE_PICKER,
                 "open": session.path is not None,
+                "tts": _tts_state(),
+                "chapters": _chapters_state(),
                 "duration": (
                     session.scheduler.chunks[-1][1]
                     if session.scheduler and session.scheduler.chunks
@@ -201,8 +323,14 @@ async def websocket(client: WebSocket) -> None:
             msg = await client.receive_json()
             if msg.get("type") == "playhead" and session.scheduler:
                 session.scheduler.set_playhead(float(msg["time"]))
-    except (WebSocketDisconnect, Exception):
-        pass
+    except WebSocketDisconnect:
+        pass  # the browser closed or navigated away
+    except Exception:
+        # WebSocketDisconnect subclasses Exception, so the arm above is the only
+        # thing this used to distinguish. Everything else -- a malformed playhead
+        # payload, a failure building hello -- tore the socket down with no
+        # diagnostic at all.
+        log.exception("websocket session failed")
     finally:
         pump.cancel()
         session.clients.discard(client)
@@ -237,7 +365,16 @@ def open_media(req: OpenReq) -> dict:
     path = Path(os.path.expanduser(req.path)).resolve()
     if not path.is_file():
         raise HTTPException(404, f"not found: {path}")
+    if not _OPEN_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "another video is already opening")
+    try:
+        return _open(path)
+    finally:
+        _OPEN_LOCK.release()
 
+
+def _open(path: Path) -> dict:
+    global _open_gen
     _teardown()
     _open_gen += 1
     gen = _open_gen
@@ -267,11 +404,36 @@ def open_media(req: OpenReq) -> dict:
     def run_chunk(idx: int, t0: float, t1: float):
         return backend.run(source.slice(t0, t1), t0)
 
-    scheduler = LookaheadScheduler(chunks, run_chunk, on_cues=_on_cues)
+    scheduler = LookaheadScheduler(chunks, run_chunk, on_cues=partial(_on_cues, gen=gen))
+    tts_model = backends.get_tts()
+    tts = TTSSynthesizer(
+        tts_model.speak,
+        backends.KokoroTTS.sample_rate,
+        CACHE_DIR / "tts" / _cache_key(path),
+        tts_model.voice,
+        enabled=TTS_ON,
+    )
+    tts.start()
+    llm = backends.get_llm()
+    chapters = Chapterer(
+        llm.chapters,
+        chapter_window(duration),
+        is_finished=lambda: bool(scheduler.state()["finished"]),
+        # Checked per session, not at boot: starting ollama between two videos
+        # is the normal way this gets switched on.
+        enabled=llm.has_model(),
+    )
+    chapters.start()
     session.path = path
     session.playback = playback
     session.scheduler = scheduler
+    session.tts = tts
+    session.chapters = chapters
     scheduler.start()
+    if TTS_ON:
+        _warm_tts()
+    # This video's PCM and remux are now on disk and in use; reclaim the rest.
+    threading.Thread(target=_prune_cache, daemon=True, name="cache-prune").start()
 
     return {
         "path": str(path),
@@ -295,11 +457,66 @@ def media() -> FileResponse:
     return FileResponse(playback.output or playback.source)
 
 
+class TTSReq(BaseModel):
+    on: bool
+    voice: str | None = None
+
+
+@app.post("/api/tts")
+def tts_toggle(req: TTSReq) -> dict:
+    """Turn read-along on or off, or change voice. Enabling loads the model in
+    the background; the client polls /api/state until `tts.ready` flips."""
+    tts = session.tts
+    if tts is None:
+        raise HTTPException(400, "no media open")
+    if req.voice and req.voice in backends.KokoroTTS.voices:
+        # Model first, then the cache directory: set_voice re-queues immediately,
+        # so the worker must already be synthesising the new voice.
+        backends.get_tts().voice = req.voice
+        tts.set_voice(req.voice)
+    if req.on and not tts.enabled:
+        tts.enabled = True
+        threading.Thread(target=_warm_tts, daemon=True, name="warm-tts").start()
+    elif not req.on:
+        tts.enabled = False
+    return _tts_state()
+
+
+@app.get("/api/tts/audio")
+def tts_audio(start: float) -> FileResponse:
+    """One spoken cue as wav. 404 until the synthesiser has reached it."""
+    tts = session.tts
+    if tts is None:
+        raise HTTPException(404, "no media open")
+    path = tts.path_for(start)
+    if path is None:
+        raise HTTPException(404, "not spoken yet")
+    return FileResponse(path, media_type="audio/wav",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/api/cues")
 def cues() -> dict:
     if not session.scheduler:
         return {"items": []}
     return {"items": [c.__dict__ for c in session.scheduler.all_cues()]}
+
+
+@app.get("/api/frame")
+def frame(start: float) -> FileResponse:
+    """One frame of the open video as jpeg, for the chapter previews.
+
+    Read from the source rather than the remuxed copy: ffmpeg decodes whatever
+    codec is in there, which is exactly the case the browser can't play.
+    """
+    if not session.path:
+        raise HTTPException(404, "no media open")
+    path = frame_jpeg(session.path, start, CACHE_DIR / "frames" / _cache_key(session.path))
+    if path is None:
+        raise HTTPException(404, "no video frame available")
+    # Immutable per (video, time), so the browser only ever asks once.
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/state")
@@ -350,7 +567,8 @@ def export(fmt: str = "srt") -> PlainTextResponse:
 
 def _text(cue) -> str:
     if cue.target and cue.target != cue.source:
-        return f"{cue.source}\n{cue.target}"
+        # A target with no source would otherwise open the cue with a blank line.
+        return f"{cue.source}\n{cue.target}" if cue.source else cue.target
     return cue.source or cue.target
 
 
@@ -370,6 +588,12 @@ def _teardown() -> None:
     if session.playback:
         session.playback.cancel()
         session.playback = None
+    if session.tts:
+        session.tts.stop()
+        session.tts = None
+    if session.chapters:
+        session.chapters.stop()
+        session.chapters = None
     if session.scheduler:
         session.scheduler.stop()
         session.scheduler = None
