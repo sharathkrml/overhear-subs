@@ -625,9 +625,9 @@ el.meter.addEventListener("pointercancel", endDrag);
 function tick() {
   const t = el.video.currentTime;
   const idx = findCue(t);
+  const cue = idx >= 0 ? S.cues[idx] : null;
   if (idx >= 0 && S.captions) {
     S.hint = idx;
-    const cue = S.cues[idx];
     el.overlay.textContent = cue.target || cue.source;
     el.overlay.classList.add("show");
     setActive(cue.key);
@@ -898,7 +898,7 @@ function hideControls() {
 
 // --------------------------------------------------------- read-along (TTS)
 
-// The synthesiser writes each cue to disk ~10s ahead of the playhead, so this
+// The synthesiser sweeps ahead on its own (eagerly, with transcription), so this
 // side only has to keep a decoded buffer per cue and hand it to Web Audio at the
 // right moment. Web Audio rather than a second <audio> element because its
 // scheduling is sample-accurate, which is what keeps the dub locked to the

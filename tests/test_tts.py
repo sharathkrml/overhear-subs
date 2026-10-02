@@ -186,6 +186,51 @@ def test_a_failing_cue_reports_the_error_and_keeps_the_worker_alive():
     assert state["queued"] == 0  # both were attempted, not just the first
 
 
+def test_a_cue_that_recovers_is_retried_not_lost():
+    """The regression: `submit` claims a cue before queueing it and nothing ever
+    re-submits one (its chunk is cached), so a single throw lost that line's audio
+    for the rest of the session."""
+    attempts = []
+
+    def flaky(text, speed: float = 1.0):
+        attempts.append(text)
+        if len(attempts) == 1:
+            raise RuntimeError("kokoro warming up")
+        return np.full(SR // 10, 0.1, dtype=np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tts = build(Path(tmp), speak=flaky)
+        tts.submit([Cue(0.0, 3.0, "one")])
+        settled(tts)
+        state = tts.state()
+        path = tts.path_for(0.0)
+        written = path is not None and path.is_file()
+        tts.stop()
+    assert len(attempts) == 2, "the retry did not happen"
+    assert state["spoken"] == 1, "the recovered cue was never written"
+    assert written
+
+
+def test_a_cue_that_always_throws_gives_up_instead_of_spinning():
+    """Same ceiling as the scheduler: bounded, or one bad cue starves every later
+    one because they share a single worker and a single queue."""
+    attempts = []
+
+    def boom(text, speed: float = 1.0):
+        attempts.append(text)
+        raise RuntimeError("no espeak")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tts = build(Path(tmp), speak=boom)
+        tts.submit([Cue(0.0, 3.0, "one")])
+        settled(tts)
+        state = tts.state()
+        tts.stop()
+    assert len(attempts) == TTSSynthesizer._TRIES, "a doomed cue retried forever"
+    assert state["queued"] == 0
+    assert state["spoken"] == 0
+
+
 # ------------------------------------------------------------------ wav
 
 

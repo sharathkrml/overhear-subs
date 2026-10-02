@@ -5,7 +5,8 @@ LT_CACHE ?= $(HOME)/.cache/overhear-subs
 -include .env
 
 # Keep this list in sync with the app's env vars.
-APP_VARS = PORT LT_CACHE LT_LOOKAHEAD LT_CHUNK LT_REMUX LT_TRANSLATE_MODEL \
+APP_VARS = PORT LT_CACHE LT_CACHE_MAX LT_LOOKAHEAD LT_CHUNK LT_REMUX \
+           LT_TRANSLATE_MODEL \
            LT_TTS LT_TTS_MODEL LT_TTS_VOICE LT_TTS_LANG \
            LT_OLLAMA_URL LT_CHAPTER_MODEL LT_CHAPTER_AIM LT_CHAPTER_MIN LT_CHAPTER_MAX \
            PHONEMIZER_ESPEAK_LIBRARY PHONEMIZER_ESPEAK_DATA_PATH \
@@ -16,7 +17,7 @@ export_if_set = $(if $(filter undefined,$(origin $(1))),,$(eval export $(1)))
 $(foreach v,$(APP_VARS),$(call export_if_set,$(v)))
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev test check clean cache-clean
+.PHONY: help setup run dev test check clean cache-status cache-clean
 
 help:
 	@echo "overhear-subs"
@@ -27,8 +28,10 @@ help:
 	@echo "  make test        run the test suite"
 	@echo "  make check       byte-compile the python modules"
 	@echo "  make clean       remove .venv and caches"
-	@echo "  make cache-clean remove derived PCM/remuxed media ($(LT_CACHE))"
+	@echo "  make cache-status  report what the media cache is holding"
+	@echo "  make cache-clean   delete the media cache entirely"
 	@echo
+	@echo "The cache self-prunes to LT_CACHE_MAX MB (default 4096, 0 disables)."
 	@echo "Override the port with: make run PORT=9000"
 	@echo "Pass a token with   : HF_TOKEN=hf_xxx make run"
 
@@ -49,6 +52,9 @@ check:
 
 clean:
 	rm -rf .venv __pycache__ .pytest_cache tests/__pycache__
+
+cache-status:
+	@uv run python pipeline.py
 
 cache-clean:
 	rm -rf "$(LT_CACHE)"

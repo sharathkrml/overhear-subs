@@ -22,16 +22,18 @@ Play a local video — the words are already on screen when the scene reaches th
 ```mermaid
 flowchart LR
     A([playhead]) --> B["captions already here"]
-    A -. "upcoming chunks" .-> C["transcribing next chunk"]
-    C -. "idle when not needed" .-> D["queued"]
+    A -. "whole file, in order" .-> C["transcribing next chunk"]
+    C -. "ahead of the playhead" .-> D["queued"]
 ```
 
-An 88-second clip is cut into 3 chunks. At `playhead = 0`, **one** is transcribed. The worker idles until the video catches up.
+An 88-second clip is cut into 3 chunks. Transcription runs **eagerly**: the worker
+sweeps the whole file from the first chunk, as fast as the GPU allows, so it is
+normally well past wherever the playhead is.
 
 | Playhead | Scheduler |
 | --- | --- |
-| Playing | keeps the chunk you're about to hit in the queue |
-| Paused | freezes the window, GPU rests |
+| Playing | keeps transcribing ahead of you |
+| Paused | keeps going — the GPU does **not** rest |
 | Rewound | re-serves from cache, never re-runs the model |
 
 Everything stays on your machine. The only network hit is the one-time model download from Hugging Face.
@@ -63,7 +65,7 @@ flowchart TB
 | --- | --- |
 | **Demux** | `ffmpeg` → mono 16 kHz float32 PCM, cached by `path + size + mtime`. Loaded as `np.memmap`, so seeking is just `SAMPLE_RATE * seconds` — an array index. No decode-on-the-fly, no VAD. |
 | **Chunking** | `plan_chunks` cuts ~30s windows; `silencedetect` (≥0.4s below −35 dB) nudges each edge up to ±6s so words never split mid-vowel. |
-| **Scheduler** | One thread, one rule: transcribe the chunk the playhead is inside, plus the ones coming up soon after it, then rest. The chunk you're about to hit jumps the queue; the rest fills in progressively. |
+| **Scheduler** | One thread, one rule: run the chunks in order from the first, back-filling anything a seek skipped. The chunk you're about to hit jumps the queue; the rest fills in afterwards. |
 | **Whisper** | `mlx-community/whisper-large-v3-mlx` on the Apple GPU. Built-in `task="translate"` renders any spoken language as English in a single pass. Full `large-v3`, not turbo — turbo silently ignores translation. |
 | **Reflow** | `reflow_cues` splits long segments into ≤ 2 balanced lines (≤ 42 chars), re-timed proportionally. CJK hard-wraps. No 3rd line covering the actor's face. |
 
@@ -114,7 +116,7 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HF_TOKEN` | — | Hugging Face token (also `HUGGING_FACE_HUB_TOKEN`) |
-| `LT_LOOKAHEAD` | `10.0` | minimum transcript runway (seconds) the worker keeps before pausing |
+| `LT_LOOKAHEAD` | `10.0` | how much transcript in front of the playhead turns the "caught up" indicator green. Display only — transcription runs eagerly to the end of the file and this does **not** gate or pause the worker |
 | `LT_CHUNK` | `30.0` | chunk length in seconds; shorter means a seek waits less for captions |
 | `LT_TRANSLATE_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR repo (must be translate-capable) |
 | `LT_REMUX` | `1` | convert unplayable files to browser-safe mp4 (`0` disables) |
@@ -128,6 +130,7 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | `LT_CHAPTER_MIN` | `180` | floor on `LT_CHAPTER_AIM` |
 | `LT_CHAPTER_MAX` | `480` | ceiling on `LT_CHAPTER_AIM` |
 | `LT_CACHE` | `~/.cache/overhear-subs` | derived PCM + remuxed mp4 |
+| `LT_CACHE_MAX` | `4096` | ceiling on that directory in MB; least-recently-used entries are pruned at boot and after every open. `0` disables |
 | `PORT` | `8000` | server port (`make run` / `make dev`) |
 
 Set them inline, or copy `.env.example` to `.env` — the Makefile includes it and
@@ -148,10 +151,11 @@ Press **Speak** (or `R`) and the English translation is spoken over the video, w
 original audio ducked to 15%. Pick a voice from the dropdown; each voice caches
 separately, so switching back is instant.
 
-It rides the same look-ahead the transcriber already keeps. A cue is spoken the moment its
-chunk lands — about ten seconds before the playhead reaches it — so playback is instant
-and gapless. `Kokoro-82M-4bit` measured **12.7× realtime** on an M1 Pro, which puts the
-slowest of eight test cues at 0.38s: 3.8% of the runway. A cue that would overrun its own
+It rides the same sweep the transcriber already does. A cue is spoken the moment its
+chunk lands, which on a paused or slow-churning video can be long before the playhead
+reaches it — so playback stays instant and gapless, and scrubbing into a region you've
+already transcribed never waits. `Kokoro-82M-4bit` measured **12.7× realtime** on an M1 Pro,
+which puts the slowest of eight test cues at 0.38s. A cue that would overrun its own
 subtitle window is re-spoken once, faster, so a fast talker doesn't get clipped.
 
 Scheduling is Web Audio against `video.currentTime`, so the dub stays locked through seeks,
@@ -178,8 +182,8 @@ Apple Silicon and Intel prefixes; override with `PHONEMIZER_ESPEAK_LIBRARY` and
 
 ## Chapters
 
-A local Ollama model names the topic as you watch. Chapters get three surfaces, because the
-app is used in three different postures:
+A local Ollama model names the topic as the transcript is produced. Chapters get three
+surfaces, because the app is used in three different postures:
 
 | Surface | Where | What it is for |
 | --- | --- | --- |
@@ -235,10 +239,12 @@ prompt so consecutive windows don't repeat themselves.
 Windows are always taken lowest-index-first, so the backfill sweep after a seek fills in the
 chapters the seek skipped over.
 
-**Chapters lag by design.** Transcription runs ~10 s ahead of the playhead, so the first chapter
-can't exist until you've *watched* one window (~5 min). Watch to the end — or let the backfill
-sweep finish — and every chapter appears. There's no way around it: summarising needs the
-transcript.
+**Chapters trail the transcript, not the playback.** A chapter summarises a window of
+transcript, so it can't exist until that window *has been transcribed* — which happens as
+fast as the GPU gets through the file, not as you watch it. On a long video the whole list
+usually appears while you're still on the first few minutes. Summarising needs the words
+it summarises, so some delay is unavoidable; how much depends on transcript speed, not
+playback.
 
 **Needs Ollama running with the model already pulled.** `ollama pull qwen3:8b`. The app checks
 `/api/tags` and stays off if the model isn't there, because `/api/chat` will happily pull a
@@ -249,13 +255,23 @@ instead of rendering blank.
 
 ## Limits (the honest part)
 
-- **How far ahead is approximate.** The worker keeps transcribing until the upcoming chunks are covered, so the runway follows chunk boundaries (~30s, `LT_CHUNK`) rather than landing on an exact number of seconds.
+- **The whole file gets transcribed.** Eagerly, from the first chunk — pausing does not pause
+  the GPU, and a two-hour video will be fully transcribed whether or not you watch it all.
+  That's the trade for scrubbing anywhere instantly and for chapters filling in ahead of you.
+- **A chunk that fails is retried, then skipped.** Three attempts, then it's recorded as a gap
+  so the sweep can continue; the status line keeps saying which chunk was dropped.
 - **One video at a time.** `/media` serves the current file; opening another cancels what's in flight.
 - **Cached conversions are re-probed** — a stale cache is discarded, not served.
+- **The cache is bounded, not permanent.** Entries are keyed by `path + size + mtime`, so
+  re-editing a video orphans its old entry; `LT_CACHE_MAX` (4 GB default) prunes
+  least-recently-used ones at boot and after every open. Pruning is logged at warning level,
+  so you'll see what it dropped. Everything it removes is re-derivable — PCM and remuxed
+  copies come back from ffmpeg, TTS audio from Kokoro. `make cache-status` reports the
+  current total; `make cache-clean` deletes it all.
 - **File panel uses `osascript`** (`app.py:choose_file`). macOS may ask once to control System Events (only to bring the panel forward); denied = panel may open behind the browser. Non-macOS falls back to a path field.
 - **Chunk planning re-runs `silencedetect`** on every open (fast, audio-only); PCM extraction is cached.
-- **Chapters lag one window behind playback** — see above. Transcription leads by ~10 s, so a
-  summary can't exist before the words it summarises.
+- **Chapters trail the transcript** — see above. A summary can't exist before the words it
+  summarises, so the delay tracks transcription speed rather than how much you've watched.
 - **Chapter titles can repeat a window later.** The previous title is in the prompt and an 8B
   model still occasionally lands on the same name; there is no de-duplication pass over the final
   list, because that costs another LLM call per chapter for a cosmetic gain.
@@ -284,6 +300,7 @@ UI follows Apple's fluid-interface guidance: feedback on pointer-*down*, 1:1 tim
 make test    # chunk planning, scheduler, reflow, format detection — fake backend, no model/ffmpeg
 make dev     # auto-reload        make run PORT=9000
 make check   # byte-compile      make clean / make cache-clean
+make cache-status   # what the media cache is holding
 ```
 
 All Python goes through `uv` — no manual venv activation.
