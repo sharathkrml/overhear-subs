@@ -600,6 +600,8 @@ function stepCue(dir) {
   if (dir < 0 && i >= 0 && t > cues[i].start + 1) i += 1;
   const next = cues[i + dir];
   if (!next) return false;
+  // ponytail: don't leap across a long silence — fall back to a plain step
+  if (dir < 0 && t - next.start > 5) return false;
   seekTo(next.start);
   return true;
 }
