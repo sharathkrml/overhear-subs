@@ -295,7 +295,7 @@ function renderChapters(state) {
 function chapterNote(state) {
   if (state.error) return state.error;
   if (!state.enabled) {
-    return `start ollama and pull ${S.chapterModel || "a model"} to get chapters`;
+    return `pull ${S.chapterModel || "a chapter model"} to get chapters`;
   }
   if (!S.chapterCount) return `first chapter after ${clock(state.every || 300)}`;
   return "";
