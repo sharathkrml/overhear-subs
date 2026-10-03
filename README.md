@@ -99,7 +99,7 @@ play/pause · −10s · +10s · volume+mute · time · speed · CC · PiP · ful
 | --- | --- | --- | --- |
 | `⌘O` | Open a video | `M` | Mute |
 | `Space` / `K` | Play / pause | `0`–`9` | Jump to 0–90% |
-| `←` / `→` | Seek 5s (`⇧` = 30s) | `Home` / `End` | Start / end |
+| `←` / `→` | Previous / next subtitle | `Home` / `End` | Start / end |
 | `J` / `L` | Seek 10s | `,` / `.` | Frame step (paused) |
 | `↑` / `↓` | Volume | `<` / `>` | Playback speed |
 | `C` | Toggle captions | `F` | Fullscreen |

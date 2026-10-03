@@ -590,6 +590,20 @@ function paintHead(t) {
   el.ctlTime.textContent = `${clock(t)} / ${clock(d)}`;
 }
 
+function stepCue(dir) {
+  const cues = S.cues;
+  if (!cues.length) return false;
+  const t = el.video.currentTime;
+  let i = -1;
+  for (let k = 0; k < cues.length && cues[k].start <= t + 0.05; k++) i = k;
+  // ponytail: 1s restart window — press again for the line before this one
+  if (dir < 0 && i >= 0 && t > cues[i].start + 1) i += 1;
+  const next = cues[i + dir];
+  if (!next) return false;
+  seekTo(next.start);
+  return true;
+}
+
 // ----------------------------------------------------------------- meter
 
 function timelineSeek(event) {
@@ -1482,11 +1496,11 @@ document.addEventListener("keydown", (event) => {
   switch (key) {
     case "ArrowLeft":
       event.preventDefault();
-      seekTo(el.video.currentTime - step);
+      if (!stepCue(-1)) seekTo(el.video.currentTime - step);
       break;
     case "ArrowRight":
       event.preventDefault();
-      seekTo(el.video.currentTime + step);
+      if (!stepCue(1)) seekTo(el.video.currentTime + step);
       break;
     case "ArrowUp":
       event.preventDefault();
