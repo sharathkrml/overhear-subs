@@ -37,10 +37,14 @@ TTS_VOICE = os.environ.get("LT_TTS_VOICE", "af_heart")
 TTS_LANG = os.environ.get("LT_TTS_LANG", "a")  # 'a' = American English
 
 # mlx-lm names the chapter titles. A small instruct model is enough: the only job
-# is naming a topic from ~1.5k words of context. 3B 4bit is ~2 GB and stays out
-# of the way of Whisper, which is the constraint this competes on.
+# is naming a topic from ~1.5k words of context, so the thing that matters is
+# finding topic boundaries reliably, not fluency.
+#
+# Measured on a three-topic window, 6 runs each, both found all 3 chapters:
+# Qwen3.5-4B found both real topic changes 6/6, Llama-3.2-3B only 4/6. For 1.2 GB
+# and 1.2s more, against a 300s window where 1.2s is nothing.
 CHAPTER_MODEL = os.environ.get("LT_CHAPTER_MODEL",
-                               "mlx-community/Llama-3.2-3B-Instruct-4bit")
+                               "mlx-community/Qwen3.5-4B-MLX-4bit")
 CHAPTER_MAX_PER_WINDOW = 4
 
 

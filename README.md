@@ -124,7 +124,7 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | `LT_TTS_MODEL` | `mlx-community/Kokoro-82M-4bit` | read-along voice repo |
 | `LT_TTS_VOICE` | `af_heart` | default voice (28 in the picker) |
 | `LT_TTS_LANG` | `a` | Kokoro language code, `a` = American English |
-| `LT_CHAPTER_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | MLX model repo that names the topics |
+| `LT_CHAPTER_MODEL` | `mlx-community/Qwen3.5-4B-MLX-4bit` | MLX model repo that names the topics |
 | `LT_CHAPTER_AIM` | `300` | transcript seconds per chapter call, before clamping |
 | `LT_CHAPTER_MIN` | `180` | floor on `LT_CHAPTER_AIM` |
 | `LT_CHAPTER_MAX` | `480` | ceiling on `LT_CHAPTER_AIM` |
@@ -249,7 +249,7 @@ it summarises, so some delay is unavoidable; how much depends on transcript spee
 playback.
 
 **Needs the weights already in the HF cache.** `huggingface-cli download
-mlx-community/Llama-3.2-3B-Instruct-4bit`, or point `LT_CHAPTER_MODEL` at a local weights dir.
+mlx-community/Qwen3.5-4B-MLX-4bit`, or point `LT_CHAPTER_MODEL` at a local weights dir.
 The app checks the cache and stays off if the model isn't there, because `mlx-lm` will happily
 download a missing repo and that's a multi-GB fetch nobody asked for. Until then the strip says
 so instead of rendering blank.
@@ -280,8 +280,8 @@ so instead of rendering blank.
   list, because that costs another LLM call per chapter for a cosmetic gain.
 - **The chapter model competes for unified memory** with Whisper, and there is no eviction to
   undo it: the weights load on the first window and stay resident for the life of the process.
-  `Llama-3.2-3B-Instruct-4bit` is ~2 GB, which is the reason that is the default — on a 16 GB Mac
-  a much larger `LT_CHAPTER_MODEL` alongside `whisper-large-v3` will slow transcription.
+  The default 4-bit model is ~3 GB — on a 16 GB Mac a much larger `LT_CHAPTER_MODEL` alongside
+  `whisper-large-v3` will slow transcription.
 - **Read-along is English-only.** Whisper translates to English, and Kokoro is strongest in
   English, so speaking the translation is the coherent path. Other Kokoro languages need
   `LT_TTS_LANG` and a matching Whisper target language.
