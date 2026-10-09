@@ -6,21 +6,22 @@ so there is a single backend and no separate translation stage.
 Kokoro speaks those translated cues back for read-along. It needs espeak-ng as
 its grapheme-to-phoneme step, like every small open English TTS.
 
-Ollama names a topic every so often so the panel gets a chapter list. It talks
-HTTP rather than loading weights, so there is nothing to warm: the only
-question is whether the model is already pulled.
+mlx-lm names a topic every so often so the panel gets a chapter list. It runs
+in this process on the chapter worker thread, so its weights load on the first
+window rather than at boot and then stay resident next to Whisper.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import threading
-import urllib.request
 from pathlib import Path
 
 import numpy as np
+from huggingface_hub import snapshot_download
+from mlx_lm import generate, load
+from mlx_lm.sample_utils import make_sampler
 
 from pipeline import SAMPLE_RATE, Cue
 
@@ -35,15 +36,16 @@ TTS_MODEL = os.environ.get("LT_TTS_MODEL", "mlx-community/Kokoro-82M-4bit")
 TTS_VOICE = os.environ.get("LT_TTS_VOICE", "af_heart")
 TTS_LANG = os.environ.get("LT_TTS_LANG", "a")  # 'a' = American English
 
-# Ollama serves the chapter titles. Anything local works; a small instruct model
-# is enough, because the only job is naming a topic from ~1.5k words of context.
-OLLAMA_URL = os.environ.get("LT_OLLAMA_URL", "http://127.0.0.1:11434")
-CHAPTER_MODEL = os.environ.get("LT_CHAPTER_MODEL", "qwen3:8b")
+# mlx-lm names the chapter titles. A small instruct model is enough: the only job
+# is naming a topic from ~1.5k words of context, so the thing that matters is
+# finding topic boundaries reliably, not fluency.
+#
+# Measured on a three-topic window, 6 runs each, both found all 3 chapters:
+# Qwen3.5-4B found both real topic changes 6/6, Llama-3.2-3B only 4/6. For 1.2 GB
+# and 1.2s more, against a 300s window where 1.2s is nothing.
+CHAPTER_MODEL = os.environ.get("LT_CHAPTER_MODEL",
+                               "mlx-community/Qwen3.5-4B-MLX-4bit")
 CHAPTER_MAX_PER_WINDOW = 4
-# A cold qwen3:8b load is ~30s, so the request has to outlast it. The 10s of
-# transcript runway the ASR scheduler already keeps is unaffected: the worker
-# thread is not the one feeding the playhead.
-CHAPTER_TIMEOUT = 300.0
 
 
 def _point_at_espeak() -> None:
@@ -249,134 +251,137 @@ def get_tts() -> KokoroTTS:
 
 
 # --------------------------------------------------------------------------
-# Ollama: names a topic in a window of transcript
+# MLX-LM: names a topic in a window of transcript
 # --------------------------------------------------------------------------
 
-# Constrained decoding, so the reply is always this shape and nothing downstream
-# has to parse prose or fish for a title in the middle of a sentence.
-CHAPTER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "chapters": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "start": {"type": "number"},
-                    "title": {"type": "string"},
-                },
-                "required": ["start", "title"],
-            },
-        }
-    },
-    "required": ["chapters"],
-}
-
-_CHAPTER_SYSTEM = (
-    "You split a transcript into chapters for a video's chapter list. "
-    "Reply with JSON only."
-)
-
-# Offsets, not video time: a window is a few minutes of a two-hour file, and an
-# 8B model handed absolute timestamps reliably invents them. Relative ones it can
-# read straight off the [mm:ss] stamps.
+# Offsets, not video time: a window is a few minutes of a two-hour file, and a
+# small model handed absolute timestamps reliably invents them. Relative ones it
+# can read straight off the [mm:ss] stamps.
+#
+# One plain line per chapter rather than JSON. mlx-lm has no constrained decoding
+# (its logits processors are penalties only), so the reply shape has to come
+# from the prompt -- and a line format is both easier for a small model to hold
+# and safe to cut off: a JSON reply truncated by max_tokens throws away every
+# chapter in it, a line reply keeps the ones it finished writing.
+#
+# The worked example is deliberately off-topic, and must stay that way. Measured
+# against this transcript on Llama-3.2-3B, an example titled after the subject
+# ("Why the scheduler reads ahead") got copied verbatim into the reply in 2 of 12
+# runs; the bread-baking example, in 0 of 12.
 _CHAPTER_PROMPT = """Split this transcript excerpt into video chapters.
 
-Return 1-{max} chapters, each with:
-- start: the [mm:ss] stamp of the first line of that chapter, in seconds. The
-  stamps are offsets from the start of this excerpt, so the first line is 0.
-- title: 3-8 words naming what is discussed from that point on. No quotes, no
-  trailing punctuation, no numbering, and never reuse the previous chapter.
+Reply with 1-{max} lines and nothing else, each in exactly this form:
+  <mm:ss> - <title>
+where <mm:ss> is the stamp of the first transcript line of that chapter and
+<title> is 3-8 words naming what is discussed from that point on. To show the
+shape only, here is the reply to an unrelated talk about bread baking:
+  00:00 - Why the starter needs feeding twice a day
+  01:47 - Shaping and scoring the loaf
+Those two lines are an example, not an answer: title THIS transcript instead.
+
+The stamps are offsets from the start of this excerpt, so the first one is
+00:00. No numbering, no quotes, no trailing punctuation, and never reuse the
+previous chapter's title.
 
 Cut where the topic actually changes, not at even intervals. If the excerpt is
-one continuous topic, return a single chapter starting at 0.
+one continuous topic, reply with a single line starting at 00:00.
 
 Previous chapter: {prev}
 
 Transcript:
 {text}"""
 
-# Models ignore the instruction often enough to be worth a cheap clean-up.
+# The stamp is unbracketed and the title follows a dash, so a line quoted back
+# out of the transcript (those look like `[01:23] text`) cannot be mistaken for
+# a chapter. Horizontal space only: `\s` would let a title-less line swallow the
+# newline and merge itself with the next chapter.
+_CHAPTER_LINE = re.compile(
+    r"^[ \t]*(\d{1,3}):([0-5]\d)[ \t]+[-–—][ \t]+(.+?)[ \t]*$", re.MULTILINE)
 _TITLE_EDGES = re.compile(r"^[\s\"'“‘]+|[\s\"'”’.,;:!?]+$")
 
 
-class OllamaLLM:
-    """Chapter titles for a window of transcript, from a local Ollama server."""
+class MLXLLM:
+    """Chapter titles for a window of transcript, from a local MLX model.
 
-    def __init__(self, url: str = OLLAMA_URL, model: str = CHAPTER_MODEL,
-                 timeout: float = CHAPTER_TIMEOUT,
-                 max_chapters: int = CHAPTER_MAX_PER_WINDOW):
-        self.url = url.rstrip("/")
+    Weights load on the first window and then stay resident for the life of the
+    process. There is no keep-alive to expire them the way a served model has,
+    so the cost is unified memory held beside Whisper — see the README.
+    """
+
+    def __init__(self, model: str = CHAPTER_MODEL,
+                 max_chapters: int = CHAPTER_MAX_PER_WINDOW,
+                 max_tokens: int = 256):
         self.model = model
-        self.timeout = timeout
         self.max_chapters = max_chapters
-        self._lock = threading.Lock()
+        self.max_tokens = max_tokens
+        self._model = None
+        self._tokenizer = None
 
     def has_model(self) -> bool:
-        """Is the model already pulled?
+        """Are the weights already on disk?
 
-        /api/chat will quietly pull a missing model, and that is a multi-GB
-        download nobody asked for, so the chapterer stays off until it is there.
+        Same reason the ollama probe existed: the first `chapters()` call on a
+        repo that isn't cached pulls a couple of GB nobody asked for, so the
+        chapterer stays off until they are there. Asking only about `*.safetensors`
+        keeps a half-populated cache (tokenizer fetched, weights not) from reading
+        as ready, and `local_files_only` makes it a cache stat — no network, and
+        nothing to serialise against a generation in flight.
         """
+        target = resolve_model(self.model)
+        if Path(target).is_dir():
+            return True
         try:
-            with self._lock:
-                tags = self._get("/api/tags", timeout=3.0)
+            snapshot_download(target, local_files_only=True,
+                              allow_patterns=["*.safetensors"])
+            return True
         except Exception:
             return False
-        names = {m.get("name") for m in tags.get("models", [])}
-        return self.model in names or f"{self.model}:latest" in names
 
     def chapters(self, text: str, prev: str | None = None) -> list[dict]:
         """[{start, title}] with `start` in seconds from the start of `text`."""
-        body = json.dumps({
-            "model": self.model,
-            "stream": False,
-            # qwen3 is a reasoning model and will spend its budget thinking about
-            # chapter titles instead of writing them.
-            "think": False,
-            # Evict after ten idle minutes instead of sitting in unified memory
-            # for the rest of the session next to Whisper.
-            "keep_alive": "10m",
-            "format": CHAPTER_SCHEMA,
-            "options": {"temperature": 0.4},
-            "messages": [
-                {"role": "system", "content": _CHAPTER_SYSTEM},
-                {"role": "user", "content": _CHAPTER_PROMPT.format(
-                    max=self.max_chapters, prev=prev or "(none)", text=text)},
-            ],
-        }).encode()
-        with self._lock:
-            reply = self._post("/api/chat", body)
+        model, tokenizer = self._load()
+        template = {"tokenize": False, "add_generation_prompt": True}
+        # A reasoning model would otherwise spend its whole budget thinking about
+        # titles. apply_chat_template remaps or drops this for models with no
+        # thinking channel.
+        template["enable_thinking"] = False
+        prompt = tokenizer.apply_chat_template([{
+            "role": "user",
+            "content": _CHAPTER_PROMPT.format(
+                max=self.max_chapters, prev=prev or "(none)", text=text),
+        }], **template)
+
+        # ponytail: no lock around the load. Chapterer runs a single worker
+        # thread, so `chapters()` has one caller; add one if a second lands.
+        reply = generate(model, tokenizer, prompt, max_tokens=self.max_tokens,
+                         sampler=make_sampler(temp=0.4))
 
         out = []
-        for item in json.loads(reply["message"]["content"]).get("chapters") or []:
-            start = item.get("start")
-            title = _TITLE_EDGES.sub("", str(item.get("title") or ""))[:80]
-            if isinstance(start, (int, float)) and not isinstance(start, bool) and title:
-                out.append({"start": max(0.0, float(start)), "title": title})
+        for minutes, seconds, title in _CHAPTER_LINE.findall(reply):
+            title = _TITLE_EDGES.sub("", title)[:80]
+            if title:
+                out.append({"start": int(minutes) * 60 + int(seconds),
+                            "title": title})
         return sorted(out, key=lambda c: c["start"])[:self.max_chapters]
 
-    # -- transport ---------------------------------------------------------
+    def _load(self):
+        """Load the weights once, lazily.
 
-    def _get(self, path: str, timeout: float) -> dict:
-        with urllib.request.urlopen(self.url + path, timeout=timeout) as fh:
-            return json.loads(fh.read())
-
-    def _post(self, path: str, body: bytes) -> dict:
-        request = urllib.request.Request(
-            self.url + path, data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as fh:
-            return json.loads(fh.read())
+        The first window pays a cold load (seconds from disk). That is fine here
+        and nowhere else: Chapterer runs this on its own worker thread, so the
+        load cannot stall the playhead the way a request thread would.
+        """
+        if self._model is None:
+            self._model, self._tokenizer = load(resolve_model(self.model))
+        return self._model, self._tokenizer
 
 
-_llm: OllamaLLM | None = None
+_llm: MLXLLM | None = None
 
 
-def get_llm() -> OllamaLLM:
-    """The one resident LLM client. Cheap to build: it holds no weights."""
+def get_llm() -> MLXLLM:
+    """The one resident LLM client. Cheap to build: it holds no weights yet."""
     global _llm
     if _llm is None:
-        _llm = OllamaLLM()
+        _llm = MLXLLM()
     return _llm
