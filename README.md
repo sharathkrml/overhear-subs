@@ -1,6 +1,6 @@
 <div align="center">
 
-# overhear-subs
+#. overhear-subs
 
 **Subtitles that pull up before you do.**
 
