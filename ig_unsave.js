@@ -112,7 +112,7 @@ unsaveAll().then(n => console.log('done unsaving', n, 'posts'));
 
 righArrowAndUnsave = async () => {
   const sleep = () => {
-    const ms = 1000 + Math.random() * 1000;
+    const ms = 950 + Math.random() * 950;
     console.log('[righArrowAndUnsave] sleeping:', (ms / 1000).toFixed(1), 's');
     return new Promise(r => setTimeout(r, ms));
   };
