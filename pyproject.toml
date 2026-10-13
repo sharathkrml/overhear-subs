@@ -6,11 +6,15 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "mlx-whisper>=0.4.3",
     "mlx-audio>=0.2.0",
+    # Chapter titles, in-process on the chapter worker thread.
+    "mlx-lm>=0.28",
     # Kokoro's grapheme-to-phoneme step. Needs espeak-ng (brew) on disk.
     "misaki[en]>=0.9",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "numpy>=1.26",
+    # Imported directly, for the local-weights check behind has_model().
+    "huggingface-hub>=1.0",
 ]
 
 [dependency-groups]

@@ -99,7 +99,7 @@ play/pause · −10s · +10s · volume+mute · time · speed · CC · PiP · ful
 | --- | --- | --- | --- |
 | `⌘O` | Open a video | `M` | Mute |
 | `Space` / `K` | Play / pause | `0`–`9` | Jump to 0–90% |
-| `←` / `→` | Seek 5s (`⇧` = 30s) | `Home` / `End` | Start / end |
+| `←` / `→` | Previous / next subtitle | `Home` / `End` | Start / end |
 | `J` / `L` | Seek 10s | `,` / `.` | Frame step (paused) |
 | `↑` / `↓` | Volume | `<` / `>` | Playback speed |
 | `C` | Toggle captions | `F` | Fullscreen |
@@ -124,8 +124,7 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | `LT_TTS_MODEL` | `mlx-community/Kokoro-82M-4bit` | read-along voice repo |
 | `LT_TTS_VOICE` | `af_heart` | default voice (28 in the picker) |
 | `LT_TTS_LANG` | `a` | Kokoro language code, `a` = American English |
-| `LT_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama endpoint for chapter titles |
-| `LT_CHAPTER_MODEL` | `qwen3:8b` | Ollama model that names the topics |
+| `LT_CHAPTER_MODEL` | `mlx-community/Qwen3.5-4B-MLX-4bit` | MLX model repo that names the topics |
 | `LT_CHAPTER_AIM` | `300` | transcript seconds per chapter call, before clamping |
 | `LT_CHAPTER_MIN` | `180` | floor on `LT_CHAPTER_AIM` |
 | `LT_CHAPTER_MAX` | `480` | ceiling on `LT_CHAPTER_AIM` |
@@ -182,7 +181,7 @@ Apple Silicon and Intel prefixes; override with `PHONEMIZER_ESPEAK_LIBRARY` and
 
 ## Chapters
 
-A local Ollama model names the topic as the transcript is produced. Chapters get three
+A local MLX model names the topic as the transcript is produced. Chapters get three
 surfaces, because the app is used in three different postures:
 
 | Surface | Where | What it is for |
@@ -226,15 +225,18 @@ flowchart LR
   B --> C{"window fully<br/>transcribed?"}
   C -- no --> D[wait]
   D --> C
-  C -- yes --> E["POST /api/chat<br/>JSON-schema constrained"]
+  C -- yes --> E["mlx-lm generate<br/>on the chapter worker thread"]
   E --> F["offsets -> absolute,<br/>anchor window edge"]
   F --> G[chapter list]
 ```
 
-Decoding is constrained by a JSON schema, so there is no prose to parse. Timestamps go to the
-model as `[mm:ss]` offsets from the start of the window — asking an 8B model for a position two
-hours into a file reliably produces mush — and the previous chapter's title goes along with the
-prompt so consecutive windows don't repeat themselves.
+The model replies with one `<mm:ss> - <title>` line per chapter, so there is no prose to parse and
+nothing to fish a title out of. `mlx-lm` has no constrained decoding, so the shape comes from the
+prompt — a line format is both easier for a small model to hold than JSON and safe to cut off,
+since a reply truncated by `max_tokens` still yields the chapters it finished writing. Timestamps
+go to the model as `[mm:ss]` offsets from the start of the window — asking a small model for a
+position two hours into a file reliably produces mush — and the previous chapter's title goes
+along with the prompt so consecutive windows don't repeat themselves.
 
 Windows are always taken lowest-index-first, so the backfill sweep after a seek fills in the
 chapters the seek skipped over.
@@ -246,10 +248,11 @@ usually appears while you're still on the first few minutes. Summarising needs t
 it summarises, so some delay is unavoidable; how much depends on transcript speed, not
 playback.
 
-**Needs Ollama running with the model already pulled.** `ollama pull qwen3:8b`. The app checks
-`/api/tags` and stays off if the model isn't there, because `/api/chat` will happily pull a
-missing model and that's a multi-GB download nobody asked for. Until then the strip says so
-instead of rendering blank.
+**Needs the weights already in the HF cache.** `huggingface-cli download
+mlx-community/Qwen3.5-4B-MLX-4bit`, or point `LT_CHAPTER_MODEL` at a local weights dir.
+The app checks the cache and stays off if the model isn't there, because `mlx-lm` will happily
+download a missing repo and that's a multi-GB fetch nobody asked for. Until then the strip says
+so instead of rendering blank.
 
 ---
 
@@ -272,12 +275,13 @@ instead of rendering blank.
 - **Chunk planning re-runs `silencedetect`** on every open (fast, audio-only); PCM extraction is cached.
 - **Chapters trail the transcript** — see above. A summary can't exist before the words it
   summarises, so the delay tracks transcription speed rather than how much you've watched.
-- **Chapter titles can repeat a window later.** The previous title is in the prompt and an 8B
-  model still occasionally lands on the same name; there is no de-duplication pass over the final
+- **Chapter titles can repeat a window later.** The previous title is in the prompt and even a
+  3B model occasionally lands on the same name; there is no de-duplication pass over the final
   list, because that costs another LLM call per chapter for a cosmetic gain.
-- **The chapter model competes for unified memory** with Whisper. `keep_alive: 10m` evicts it
-  once chapters stop coming, but on a 16 GB Mac a large `LT_CHAPTER_MODEL` alongside
-  `whisper-large-v3` will slow transcription — drop to `qwen3:4b` if you see it.
+- **The chapter model competes for unified memory** with Whisper, and there is no eviction to
+  undo it: the weights load on the first window and stay resident for the life of the process.
+  The default 4-bit model is ~3 GB — on a 16 GB Mac a much larger `LT_CHAPTER_MODEL` alongside
+  `whisper-large-v3` will slow transcription.
 - **Read-along is English-only.** Whisper translates to English, and Kokoro is strongest in
   English, so speaking the translation is the coherent path. Other Kokoro languages need
   `LT_TTS_LANG` and a matching Whisper target language.

@@ -1113,8 +1113,8 @@ class Chapterer:
     backfill sweep after a seek fills in the chapters the seek skipped over.
     """
 
-    # Give up on a window rather than retry it forever: ollama being down is a
-    # reason to stop, not a reason to spin a worker on a dead socket.
+    # Give up on a window rather than retry it forever: the chapter model being
+    # unloadable is a reason to stop, not a reason to spin a worker forever.
     _TRIES = 3
 
     def __init__(self, summarize, every: float, is_finished=lambda: False,

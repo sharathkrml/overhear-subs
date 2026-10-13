@@ -220,7 +220,7 @@ def _chapters_state() -> dict:
     """Shape the client needs even before a media is open: which model would do
     the job, and whether it is actually there to be used.
 
-    Only the `hello` handshake and each open pay for the /api/tags round trip;
+    Only the `hello` handshake and each open pay for the local-weights probe;
     the 2 Hz state pump reads the cached `enabled` flag off the chapterer.
     """
     chapters = session.chapters
@@ -419,8 +419,8 @@ def _open(path: Path) -> dict:
         llm.chapters,
         chapter_window(duration),
         is_finished=lambda: bool(scheduler.state()["finished"]),
-        # Checked per session, not at boot: starting ollama between two videos
-        # is the normal way this gets switched on.
+        # Checked per session, not at boot: downloading the weights between two
+        # videos is the normal way this gets switched on.
         enabled=llm.has_model(),
     )
     chapters.start()

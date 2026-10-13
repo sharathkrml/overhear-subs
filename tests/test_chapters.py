@@ -219,7 +219,7 @@ def test_a_failed_window_retries_then_gives_up():
 
     def boom(text, prev=None):
         attempts.append(text)
-        raise RuntimeError("ollama is not running")
+        raise RuntimeError("weights failed to load")
 
     ch = Chapterer(boom, 100.0)
     ch.start()

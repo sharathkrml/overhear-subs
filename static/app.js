@@ -295,7 +295,7 @@ function renderChapters(state) {
 function chapterNote(state) {
   if (state.error) return state.error;
   if (!state.enabled) {
-    return `start ollama and pull ${S.chapterModel || "a model"} to get chapters`;
+    return `pull ${S.chapterModel || "a chapter model"} to get chapters`;
   }
   if (!S.chapterCount) return `first chapter after ${clock(state.every || 300)}`;
   return "";
@@ -588,6 +588,22 @@ function paintHead(t) {
   el.meter.setAttribute("aria-valuetext", clock(t));
   el.clock.textContent = `${clock(t)} / ${clock(d)}`;
   el.ctlTime.textContent = `${clock(t)} / ${clock(d)}`;
+}
+
+function stepCue(dir) {
+  const cues = S.cues;
+  if (!cues.length) return false;
+  const t = el.video.currentTime;
+  let i = -1;
+  for (let k = 0; k < cues.length && cues[k].start <= t + 0.05; k++) i = k;
+  // ponytail: 1s restart window — press again for the line before this one
+  if (dir < 0 && i >= 0 && t > cues[i].start + 1) i += 1;
+  const next = cues[i + dir];
+  if (!next) return false;
+  // ponytail: don't leap across a long silence — fall back to a plain step
+  if (dir < 0 && t - next.start > 5) return false;
+  seekTo(next.start);
+  return true;
 }
 
 // ----------------------------------------------------------------- meter
@@ -1482,11 +1498,11 @@ document.addEventListener("keydown", (event) => {
   switch (key) {
     case "ArrowLeft":
       event.preventDefault();
-      seekTo(el.video.currentTime - step);
+      if (!stepCue(-1)) seekTo(el.video.currentTime - step);
       break;
     case "ArrowRight":
       event.preventDefault();
-      seekTo(el.video.currentTime + step);
+      if (!stepCue(1)) seekTo(el.video.currentTime + step);
       break;
     case "ArrowUp":
       event.preventDefault();
