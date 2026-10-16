@@ -29,6 +29,12 @@ from pipeline import SAMPLE_RATE, Cue
 # the full large-v3 weights, which are translate-capable.
 TRANSLATE_ASR = os.environ.get("LT_TRANSLATE_MODEL", "mlx-community/whisper-large-v3-mlx")
 
+# Two engines behind one interface. Whisper auto-detects any language and
+# translates to English; Phonon-2 is English-only and ~10x faster at 164 MB.
+ASR = os.environ.get("LT_ASR", "whisper").strip().lower()
+PHONON_MODEL = os.environ.get("LT_PHONON_MODEL", "phonon-2")
+ASR_BACKENDS = ("whisper", "phonon")
+
 # Kokoro is the fastest of the good small English voices and measured 12.7x
 # realtime on an M1 Pro, so a cue is spoken in ~4% of the look-ahead window.
 # 4bit is indistinguishable from bf16 in speed and ~20% lighter.
@@ -143,15 +149,93 @@ class WhisperASR:
         return cues
 
 
-_backend: WhisperASR | None = None
+class PhononASR:
+    """English-only transcription via fermion (Phonon-2, MLX).
+
+    Same interface as WhisperASR: run(audio, offset) -> list[Cue] with
+    absolute times. Phonon segments already arrive sentence-sized with their
+    own timings, so mapping is offset + filter.
+    """
+
+    def __init__(self, model: str = PHONON_MODEL):
+        self.model = model
+        self._model = None
+        # fermion holds its own resident model, so serialise callers the same
+        # way: warm + first chunk must not load twice.
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if self._model is None:
+            try:
+                import fermion
+            except ImportError as exc:
+                raise RuntimeError(
+                    "phonon needs the fermion-research package "
+                    "(`pip install fermion-research`)") from exc
+            self._model = fermion.load_speech(self.model)
+        return self._model
+
+    def warm(self) -> None:
+        """Load the weights now so the first chunk doesn't stall mid-playback."""
+        with self._lock:
+            self._load().transcribe_array(
+                np.zeros(SAMPLE_RATE, dtype=np.float32))
+
+    def run(self, audio, offset: float) -> list[Cue]:
+        with self._lock:
+            tr = self._load().transcribe_array_detailed(
+                np.asarray(audio, dtype=np.float32))
+
+        cues: list[Cue] = []
+        for seg in tr.segments or []:
+            if isinstance(seg, dict):
+                text, start, end = seg.get("text", ""), seg.get("start", 0.0), seg.get("end", 0.0)
+            else:
+                text, start, end = seg.text, seg.start, seg.end
+            if (text or "").strip() and end > start:
+                cues.append(Cue(offset + start, offset + end, text.strip()))
+        if not cues:
+            # Untimed fallback: text without segments is still transcript.
+            text = (tr.text or "").strip()
+            if text:
+                cues.append(Cue(offset, offset + len(audio) / SAMPLE_RATE, text))
+        return cues
 
 
-def get_backend() -> WhisperASR:
-    """The one resident model: auto-detect + translate to English."""
-    global _backend
-    if _backend is None:
-        _backend = WhisperASR(TRANSLATE_ASR, None, "translate")
-    return _backend
+_backends: dict = {}
+_asr_name = ASR if ASR in ASR_BACKENDS else "whisper"
+
+
+def current_backend_name() -> str:
+    return _asr_name
+
+
+def set_backend(name: str):
+    """Switch engine. Each stays resident once loaded; un-run chunks use the
+    new one, already-cached chunks keep the old transcript."""
+    global _asr_name
+    name = (name or "").strip().lower()
+    if name not in ASR_BACKENDS:
+        raise ValueError(f"unknown ASR backend {name!r} (want one of {ASR_BACKENDS})")
+    _asr_name = name
+    return get_backend()
+
+
+def get_backend(name: str | None = None):
+    """The resident model. No arg = the currently selected engine."""
+    if name is None:
+        name = _asr_name
+    if name not in ASR_BACKENDS:
+        raise ValueError(f"unknown ASR backend {name!r} (want one of {ASR_BACKENDS})")
+    if name not in _backends:
+        _backends[name] = (WhisperASR(TRANSLATE_ASR, None, "translate")
+                           if name == "whisper" else PhononASR())
+    return _backends[name]
+
+
+def asr_state() -> dict:
+    return {"current": _asr_name, "available": list(ASR_BACKENDS),
+            "models": {"whisper": TRANSLATE_ASR, "phonon": PHONON_MODEL}}
 
 
 # --------------------------------------------------------------------------

@@ -6,6 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "mlx-whisper>=0.4.3",
     "mlx-audio>=0.2.0",
+    # Phonon-2 engine (optional at runtime: only needed when selected).
+    "fermion-research>=0.2.11",
     # Chapter titles, in-process on the chapter worker thread.
     "mlx-lm>=0.28",
     # Kokoro's grapheme-to-phoneme step. Needs espeak-ng (brew) on disk.
