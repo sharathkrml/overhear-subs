@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 import app as app_mod
-from app import OpenReq, Session, _disposition, _on_cues, _text, _ts
+from app import AsrReq, OpenReq, Session, _asr_state, _disposition, _on_cues, _text, _ts
 from pipeline import Cue
 
 
@@ -153,3 +153,18 @@ def test_export_text_prefers_the_translation_as_a_second_line():
 def test_export_is_served_as_a_download():
     assert _disposition("transcript.srt") == {
         "Content-Disposition": 'attachment; filename="transcript.srt"'}
+
+
+# ------------------------------------------------------------------- asr switch
+
+
+def test_asr_state_lists_both_engines():
+    state = _asr_state()
+    assert set(state["available"]) == {"whisper", "phonon"}
+    assert state["current"] in state["available"]
+
+
+def test_set_asr_rejects_unknown():
+    with pytest.raises(HTTPException) as caught:
+        app_mod.set_asr(AsrReq(name="conformer"))
+    assert caught.value.status_code == 400

@@ -201,6 +201,7 @@ def _state_payload() -> dict:
         payload["tts"] = session.tts.state()
     if session.chapters:
         payload["chapters"] = session.chapters.state()
+    payload["asr"] = _asr_state()
     return payload
 
 
@@ -214,6 +215,11 @@ def _tts_state() -> dict:
                  voices=list(backends.KokoroTTS.voices),
                  sample_rate=backends.KokoroTTS.sample_rate)
     return state
+
+
+def _asr_state() -> dict:
+    """Which transcription engine is selected; cheap enough for the 2 Hz pump."""
+    return backends.asr_state()
 
 
 def _chapters_state() -> dict:
@@ -302,6 +308,7 @@ async def websocket(client: WebSocket) -> None:
                 "open": session.path is not None,
                 "tts": _tts_state(),
                 "chapters": _chapters_state(),
+                "asr": _asr_state(),
                 "duration": (
                     session.scheduler.chunks[-1][1]
                     if session.scheduler and session.scheduler.chunks
@@ -399,10 +406,11 @@ def _open(path: Path) -> dict:
         playback.cancel()
         raise HTTPException(409, "open cancelled")
     session.prep = None
-    backend = backends.get_backend()
+    # No `backend =` snapshot: the scheduler resolves the engine per chunk, so
+    # switching mid-video applies to chunks not yet run.
 
     def run_chunk(idx: int, t0: float, t1: float):
-        return backend.run(source.slice(t0, t1), t0)
+        return backends.get_backend().run(source.slice(t0, t1), t0)
 
     scheduler = LookaheadScheduler(chunks, run_chunk, on_cues=partial(_on_cues, gen=gen))
     tts_model = backends.get_tts()
@@ -460,6 +468,27 @@ def media() -> FileResponse:
 class TTSReq(BaseModel):
     on: bool
     voice: str | None = None
+
+
+class AsrReq(BaseModel):
+    name: str
+
+
+@app.get("/api/asr")
+def asr() -> dict:
+    return _asr_state()
+
+
+@app.post("/api/asr")
+def set_asr(req: AsrReq) -> dict:
+    """Switch engine. Un-run chunks use the new one; cached ones keep theirs.
+    Warms off-thread: a first Phonon run compiles shaders (~20 s)."""
+    try:
+        backends.set_backend(req.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    threading.Thread(target=_warm_backend, daemon=True, name="warm-backend").start()
+    return _asr_state()
 
 
 @app.post("/api/tts")

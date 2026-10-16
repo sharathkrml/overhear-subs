@@ -23,6 +23,7 @@ const el = {
   help: $("help"),
   helpClose: $("help-close"),
   copyAll: $("copy-all"),
+  asr: $("asr"),
   overlay: $("overlay"),
   pulse: $("pulse"),
   fileName: $("file-name"),
@@ -98,6 +99,7 @@ const S = {
   captions: true,
   speak: false,
   tts: null,
+  asr: null,
   chapters: null,
   chapterRows: new Map(),
   chapterSegs: new Map(),
@@ -134,6 +136,7 @@ function connect() {
       S.lookahead = msg.lookahead;
       if (!msg.native_picker) showFallback();
       if (msg.chapters) S.chapterModel = msg.chapters.model || "";
+      if (msg.asr) renderASR(msg.asr);
       if (msg.media) restore(msg.media);
     } else if (msg.type === "cues") {
       addCues(msg.items);
@@ -675,8 +678,17 @@ function setActive(key) {
 function renderState(state) {
   if (state.playback) S.playback = state.playback;
   if (state.prep) S.prep = state.prep;
-  if (state.tts) renderTTS(state);
-  if (state.chapters) renderChapters(state);
+  // One widget must never starve the rest: cues arrive over their own channel,
+  // so a throw here used to freeze chapters and the meter while the transcript
+  // kept growing. Log it and move on.
+  for (const [key, render] of [["tts", renderTTS], ["asr", renderASR], ["chapters", renderChapters]]) {
+    if (!state[key]) continue;
+    try {
+      render(state);
+    } catch (err) {
+      console.error(`render ${key} failed:`, err);
+    }
+  }
   if (!S.hasMedia) {
     el.pulse.classList.remove("live", "done");
     if (S.phase === "opening") {
@@ -879,7 +891,7 @@ function paintPhase() {
     showVeil({
       title: "Loading video",
       file,
-      hint: S.warming ? "Loading Auto → English (first run downloads ~3 GB)…" : "",
+      hint: S.warming ? modelHint() : "",
       steps: { audio: "done", play: "active", model: S.warming ? "active" : "" },
     });
     el.note.textContent = "Loading video…";
@@ -889,7 +901,7 @@ function paintPhase() {
   hideVeil();
 
   if (S.hasMedia && S.warming) {
-    showBanner("Loading Auto → English… first run downloads ~3 GB");
+    showBanner(modelHint());
   } else {
     hideBanner();
   }
@@ -910,6 +922,48 @@ function showControls() {
 function hideControls() {
   clearTimeout(hideTimer);
   if (!el.video.paused) el.frame.classList.remove("controls-on");
+}
+
+// -------------------------------------------------- engine picker (ASR)
+
+// Whisper hears any language and translates to English; Phonon-2 is English
+// only and ~10x faster. Switching mid-video applies to chunks not yet run;
+// already-transcribed chunks keep their old transcript.
+const ASR_LABELS = {
+  whisper: "Auto → English (Whisper)",
+  phonon: "English · fast (Phonon-2)",
+};
+
+function modelHint() {
+  return S.asr?.current === "phonon"
+    ? "Loading Phonon-2… first run downloads ~164 MB"
+    : "Loading Auto → English… first run downloads ~3 GB";
+}
+
+function renderASR(state) {
+  if (!state || !el.asr) return; // no select in a stale page: stay silent
+  S.asr = state;
+  if (el.asr.options.length !== (state.available || []).length) {
+    el.asr.replaceChildren(
+      ...state.available.map((n) => new Option(ASR_LABELS[n] || n, n))
+    );
+  }
+  el.asr.value = state.current;
+}
+
+async function setASR(name) {
+  try {
+    const res = await fetch("/api/asr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    renderASR(await res.json());
+  } catch (e) {
+    setStatus(`Engine switch: ${e.message}`, true);
+    if (S.asr) el.asr.value = S.asr.current; // revert the picker
+  }
 }
 
 // --------------------------------------------------------- read-along (TTS)
@@ -1362,6 +1416,7 @@ el.mute.onclick = toggleMute;
 el.volume.oninput = () => setVolume(el.volume.value);
 el.captions.onclick = toggleCaptions;
 el.speak.onclick = () => setSpeak(!S.speak);
+if (el.asr) el.asr.onchange = () => setASR(el.asr.value);
 el.voice.onchange = () => setSpeak(S.speak);
 el.pip.onclick = togglePiP;
 el.fullscreen.onclick = toggleFullscreen;

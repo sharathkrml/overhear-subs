@@ -3,6 +3,9 @@ chapter client's parsing. Nothing here loads weights or touches the network."""
 
 import sys
 import types
+from types import SimpleNamespace
+
+import pytest
 
 import numpy as np
 
@@ -45,6 +48,85 @@ def test_whisper_maps_segments_with_offset_and_skips_silence(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_whisper", fake)
     cues = WhisperASR("whatever").run(np.zeros(16000, dtype=np.float32), 10.0)
     assert [(c.start, c.end, c.source) for c in cues] == [(10.5, 11.5, "hello")]
+
+
+# ------------------------------------------------------------------- phonon
+
+
+class _FakeSpeech:
+    """Stands in for fermion.load_speech's return: canned detailed transcript."""
+
+    def __init__(self, transcript):
+        self.transcript = transcript
+        self.loaded_model = None
+
+    def transcribe_array(self, audio):
+        return ("", 0.0, 0.0)
+
+    def transcribe_array_detailed(self, audio):
+        assert audio.dtype == np.float32
+        return self.transcript
+
+
+def _fake_fermion(monkeypatch, transcript):
+    fake = types.ModuleType("fermion")
+    fake.models = []
+    speech = _FakeSpeech(transcript)
+
+    def load_speech(model):
+        fake.models.append(model)
+        return speech
+
+    fake.load_speech = load_speech
+    monkeypatch.setitem(sys.modules, "fermion", fake)
+    return fake
+
+
+def _detail(text="", segments=None):
+    return SimpleNamespace(text=text, segments=segments or [])
+
+
+def test_unknown_backend_is_rejected():
+    with pytest.raises(ValueError):
+        backends.set_backend("conformer")
+    with pytest.raises(ValueError):
+        backends.get_backend("conformer")
+
+
+def test_backend_switch_is_sticky_and_both_stay_resident(monkeypatch):
+    prev, backends._backends = backends._asr_name, {}
+    try:
+        whisper = backends.get_backend()
+        backends.set_backend("phonon")
+        assert backends.current_backend_name() == "phonon"
+        assert backends.get_backend() is backends._backends["phonon"]
+        assert backends.get_backend("whisper") is whisper
+    finally:
+        backends._asr_name = prev
+
+
+def test_phonon_maps_segments_with_offset(monkeypatch):
+    fake = _fake_fermion(monkeypatch, _detail(segments=[
+        {"start": 0.5, "end": 1.5, "text": " hello "},
+        {"start": 1.5, "end": 1.5, "text": "zero length: dropped"},
+        {"start": 2.0, "end": 2.5, "text": "   "},
+    ]))
+    cues = backends.PhononASR("phonon-2").run(
+        np.zeros(16000, dtype=np.float32), 10.0)
+    assert [(c.start, c.end, c.source) for c in cues] == [(10.5, 11.5, "hello")]
+    assert fake.models == ["phonon-2"]
+
+
+def test_phonon_falls_back_to_text_without_segments(monkeypatch):
+    _fake_fermion(monkeypatch, _detail(text="whole chunk"))
+    cues = backends.PhononASR().run(np.zeros(32000, dtype=np.float32), 5.0)
+    assert [(c.start, c.end, c.source) for c in cues] == [(5.0, 7.0, "whole chunk")]
+
+
+def test_phonon_without_the_package_says_how_to_install(monkeypatch):
+    monkeypatch.setitem(sys.modules, "fermion", None)
+    with pytest.raises(RuntimeError, match="fermion-research"):
+        backends.PhononASR().run(np.zeros(16000, dtype=np.float32), 0.0)
 
 
 # ------------------------------------------------------------------- chapters
