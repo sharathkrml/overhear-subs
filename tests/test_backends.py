@@ -29,11 +29,17 @@ def test_resolve_model_passes_through_repo_ids():
 
 
 def test_backend_auto_detects_and_translates():
-    asr = backends.get_backend()
+    asr = backends.get_backend("whisper")
     assert isinstance(asr, WhisperASR)
     assert asr.language is None  # None -> whisper auto-detects
     assert asr.task == "translate"
     assert asr.model == backends.TRANSLATE_ASR
+
+
+def test_default_backend_is_phonon():
+    # LT_ASR is unset in the test env, so this is the import-time default.
+    assert backends.ASR == "phonon"
+    assert isinstance(backends.get_backend("phonon"), backends.PhononASR)
 
 
 def test_whisper_maps_segments_with_offset_and_skips_silence(monkeypatch):
@@ -96,7 +102,7 @@ def test_unknown_backend_is_rejected():
 def test_backend_switch_is_sticky_and_both_stay_resident(monkeypatch):
     prev, backends._backends = backends._asr_name, {}
     try:
-        whisper = backends.get_backend()
+        whisper = backends.get_backend("whisper")
         backends.set_backend("phonon")
         assert backends.current_backend_name() == "phonon"
         assert backends.get_backend() is backends._backends["phonon"]

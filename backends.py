@@ -31,7 +31,7 @@ TRANSLATE_ASR = os.environ.get("LT_TRANSLATE_MODEL", "mlx-community/whisper-larg
 
 # Two engines behind one interface. Whisper auto-detects any language and
 # translates to English; Phonon-2 is English-only and ~10x faster at 164 MB.
-ASR = os.environ.get("LT_ASR", "whisper").strip().lower()
+ASR = os.environ.get("LT_ASR", "phonon").strip().lower()
 PHONON_MODEL = os.environ.get("LT_PHONON_MODEL", "phonon-2")
 ASR_BACKENDS = ("whisper", "phonon")
 
@@ -211,8 +211,9 @@ def current_backend_name() -> str:
 
 
 def set_backend(name: str):
-    """Switch engine. Each stays resident once loaded; un-run chunks use the
-    new one, already-cached chunks keep the old transcript."""
+    """Switch engine. Each stays resident once loaded. Takes effect on the next
+    open — the client reopens the current video on switch, so in practice the
+    whole video is retranscribed with the new engine."""
     global _asr_name
     name = (name or "").strip().lower()
     if name not in ASR_BACKENDS:

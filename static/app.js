@@ -24,6 +24,8 @@ const el = {
   helpClose: $("help-close"),
   copyAll: $("copy-all"),
   asr: $("asr"),
+  engineChip: $("engine-chip"),
+  engineNote: $("engine-note"),
   overlay: $("overlay"),
   pulse: $("pulse"),
   fileName: $("file-name"),
@@ -100,6 +102,8 @@ const S = {
   speak: false,
   tts: null,
   asr: null,
+  pendingSeek: null, // playhead to restore after an engine-switch reopen
+  pendingPlay: false, // resume playback after that reopen
   chapters: null,
   chapterRows: new Map(),
   chapterSegs: new Map(),
@@ -935,9 +939,9 @@ const ASR_LABELS = {
 };
 
 function modelHint() {
-  return S.asr?.current === "phonon"
-    ? "Loading Phonon-2… first run downloads ~164 MB"
-    : "Loading Auto → English… first run downloads ~3 GB";
+  return S.asr?.current === "whisper"
+    ? "Loading Auto → English… first run downloads ~3 GB"
+    : "Loading Phonon-2… first run downloads ~164 MB";
 }
 
 function renderASR(state) {
@@ -949,9 +953,18 @@ function renderASR(state) {
     );
   }
   el.asr.value = state.current;
+  const label = ASR_LABELS[state.current] || state.current;
+  if (el.engineChip) el.engineChip.textContent = label;
+  if (el.engineNote) el.engineNote.textContent = label;
 }
 
 async function setASR(name) {
+  const prev = S.asr?.current;
+  if (name === prev) {
+    setStatus(`Already on ${ASR_LABELS[name] || name}`);
+    return;
+  }
+  el.asr.disabled = true;
   try {
     const res = await fetch("/api/asr", {
       method: "POST",
@@ -960,9 +973,25 @@ async function setASR(name) {
     });
     if (!res.ok) throw new Error(await res.text());
     renderASR(await res.json());
+    if (!S.hasMedia || !S.mediaInfo) {
+      setStatus(`Engine → ${ASR_LABELS[name] || name} (applies to the next video)`);
+      return;
+    }
+    // A finished video has nothing left for the new engine to do, and a partial
+    // one would end up half old-engine, half new — so reopen the same file and
+    // transcribe it all with the new engine, keeping your place.
+    S.pendingSeek = el.video.currentTime || 0;
+    S.pendingPlay = !el.video.paused;
+    ttsReset(); // decoded audio is keyed by time, not text — drop it
+    setStatus(`Engine → ${ASR_LABELS[name] || name} — retranscribing…`);
+    await open(S.mediaInfo.path);
   } catch (e) {
+    S.pendingSeek = null;
+    S.pendingPlay = false;
     setStatus(`Engine switch: ${e.message}`, true);
     if (S.asr) el.asr.value = S.asr.current; // revert the picker
+  } finally {
+    el.asr.disabled = false;
   }
 }
 
@@ -1478,10 +1507,20 @@ el.video.addEventListener("loadedmetadata", () => {
   if (el.video.duration && isFinite(el.video.duration)) S.duration = el.video.duration;
   paintHead(el.video.currentTime);
   sendPlayhead(true);
+  if (S.pendingSeek != null) {
+    const t = S.pendingSeek;
+    S.pendingSeek = null;
+    seekTo(t);
+  }
 });
 el.video.addEventListener("canplay", () => {
   S.videoReady = true;
   paintPhase();
+  if (S.pendingPlay) {
+    S.pendingPlay = false;
+    const p = el.video.play();
+    if (p) p.catch(() => {}); // async play after reopen can lose the gesture
+  }
 });
 el.video.addEventListener("seeked", () => {
   S.hint = 0;
