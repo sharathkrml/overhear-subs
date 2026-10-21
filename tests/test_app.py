@@ -158,9 +158,9 @@ def test_export_is_served_as_a_download():
 # ------------------------------------------------------------------- asr switch
 
 
-def test_asr_state_lists_both_engines():
+def test_asr_state_lists_all_engines():
     state = _asr_state()
-    assert set(state["available"]) == {"whisper", "phonon"}
+    assert set(state["available"]) == {"whisper", "phonon", "bark"}
     assert state["current"] in state["available"]
 
 

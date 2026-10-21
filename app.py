@@ -406,8 +406,8 @@ def _open(path: Path) -> dict:
         playback.cancel()
         raise HTTPException(409, "open cancelled")
     session.prep = None
-    # No `backend =` snapshot: the scheduler resolves the engine per chunk, so
-    # switching mid-video applies to chunks not yet run.
+    # Resolved per chunk, not snapshotted: a switch between open and first
+    # chunk still lands on the new engine.
 
     def run_chunk(idx: int, t0: float, t1: float):
         return backends.get_backend().run(source.slice(t0, t1), t0)
@@ -417,7 +417,9 @@ def _open(path: Path) -> dict:
     tts = TTSSynthesizer(
         tts_model.speak,
         backends.KokoroTTS.sample_rate,
-        CACHE_DIR / "tts" / _cache_key(path),
+        # One cache dir per engine: cues are keyed by start time, so without
+        # this the new engine's words would play the old engine's audio.
+        CACHE_DIR / "tts" / _cache_key(path) / backends.current_backend_name(),
         tts_model.voice,
         enabled=TTS_ON,
     )
