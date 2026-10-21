@@ -135,6 +135,49 @@ def test_phonon_without_the_package_says_how_to_install(monkeypatch):
         backends.PhononASR().run(np.zeros(16000, dtype=np.float32), 0.0)
 
 
+# --------------------------------------------------------------------- bark
+
+
+class _FakeBark:
+    """Stands in for mlx-audio's Parakeet result: aligned sentences."""
+
+    def __init__(self, sentences, text=""):
+        self.sentences = sentences
+        self.text = text or " ".join(s.text for s in sentences)
+
+    def generate(self, audio, **kw):
+        return self
+
+
+def test_bark_maps_sentences_with_offset():
+    asr = backends.BarkASR()
+    asr._model = _FakeBark([
+        SimpleNamespace(text=" Hello there.", start=0.25, end=2.5),
+        SimpleNamespace(text=" Bye.", start=2.5, end=3.0),
+    ])
+    cues = asr.run(np.zeros(16000, dtype=np.float32), 10.0)
+    assert [(c.start, c.end, c.source) for c in cues] == [
+        (10.25, 12.5, "Hello there."), (12.5, 13.0, "Bye.")]
+
+
+def test_bark_falls_back_to_text_without_sentences():
+    asr = backends.BarkASR()
+    asr._model = _FakeBark([], text=" No timings here. ")
+    cues = asr.run(np.zeros(8000, dtype=np.float32), 5.0)
+    assert [(c.start, c.end, c.source) for c in cues] == [
+        (5.0, 5.5, "No timings here.")]
+
+
+def test_bark_folder_skips_the_unpack_once_written(monkeypatch, tmp_path):
+    monkeypatch.setattr(backends, "CACHE_DIR", tmp_path)
+    out = tmp_path / "models" / f"bark-{backends.BARK_REVISION[:8]}"
+    out.mkdir(parents=True)
+    (out / "model.safetensors").write_bytes(b"")
+    monkeypatch.setattr(backends, "snapshot_download",
+                        lambda *a, **k: pytest.fail("must not download again"))
+    assert backends._bark_folder() == out
+
+
 # ------------------------------------------------------------------- chapters
 
 

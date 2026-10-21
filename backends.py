@@ -9,6 +9,10 @@ its grapheme-to-phoneme step, like every small open English TTS.
 mlx-lm names a topic every so often so the panel gets a chapter list. It runs
 in this process on the chapter worker thread, so its weights load on the first
 window rather than at boot and then stay resident next to Whisper.
+
+Bark 3.0 Clean is the third engine: an English-only Parakeet fine-tune that
+drops fillers, so the cues read clean with no second pass. Its weights come as
+one entropy-coded blob; bark_weights.py unpacks them on first use.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from huggingface_hub import snapshot_download
 from mlx_lm import generate, load
 from mlx_lm.sample_utils import make_sampler
 
-from pipeline import SAMPLE_RATE, Cue
+from pipeline import CACHE_DIR, SAMPLE_RATE, Cue
 
 # large-v3-turbo silently ignores task="translate" (it just transcribes), so use
 # the full large-v3 weights, which are translate-capable.
@@ -33,7 +37,17 @@ TRANSLATE_ASR = os.environ.get("LT_TRANSLATE_MODEL", "mlx-community/whisper-larg
 # translates to English; Phonon-2 is English-only and ~10x faster at 164 MB.
 ASR = os.environ.get("LT_ASR", "phonon").strip().lower()
 PHONON_MODEL = os.environ.get("LT_PHONON_MODEL", "phonon-2")
-ASR_BACKENDS = ("whisper", "phonon")
+ASR_BACKENDS = ("whisper", "phonon", "bark")
+
+# Bark 3.0 Clean: English-only, and it deletes "um", false starts and repeats
+# on purpose. Weights arrive as a 180 MB .bark blob that unpacks to ~1.2 GB of
+# mlx-audio safetensors, so it costs one slow first use. Optional at runtime:
+# nothing here loads it unless the engine is selected.
+BARK_MODEL = os.environ.get("LT_BARK_MODEL", "ConwayResearch/Underdog-Bark-3.0-Clean")
+# The vendored decoder reads their private format, so load the revision it was
+# written against; bump only after re-checking an unpack against this one.
+BARK_REVISION = os.environ.get(
+    "LT_BARK_REVISION", "6d34ed8639b2b9a33e764acf06748519bbb950cf")
 
 # Kokoro is the fastest of the good small English voices and measured 12.7x
 # realtime on an M1 Pro, so a cue is spoken in ~4% of the look-ahead window.
@@ -202,6 +216,71 @@ class PhononASR:
         return cues
 
 
+def _bark_folder(model: str = BARK_MODEL) -> Path:
+    """The unpacked mlx-audio folder for Bark; downloads and unpacks once."""
+    out = CACHE_DIR / "models" / f"bark-{BARK_REVISION[:8]}"
+    if (out / "model.safetensors").is_file():
+        return out
+    local = Path(os.path.expanduser(model))
+    repo = local if local.is_dir() else Path(snapshot_download(
+        model, revision=BARK_REVISION,
+        allow_patterns=["model.bark", "mlx/*", "NOTICE"], token=hf_token()))
+    from bark_weights import prepare
+
+    meta = repo / "mlx"
+    return prepare(repo / "model.bark", meta if meta.is_dir() else repo, out)
+
+
+class BarkASR:
+    """English-only Parakeet fine-tune that removes fillers (Bark 3.0 Clean).
+
+    Same interface as the others: run(audio, offset) -> list[Cue] with
+    absolute times. mlx-audio returns sentence bounds with word timings, so
+    mapping is offset + filter, and text-only output still produces a cue.
+    """
+
+    def __init__(self, model: str = BARK_MODEL):
+        self.model = model
+        self._model = None
+        # One resident model, first load serialised like the others.
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if self._model is None:
+            import mlx_audio.stt
+
+            self._model = mlx_audio.stt.load(_bark_folder(self.model),
+                                             model_type="parakeet")
+        return self._model
+
+    def warm(self) -> None:
+        """Load the weights now so the first chunk doesn't stall mid-playback."""
+        import mlx.core as mx
+
+        with self._lock:
+            self._load().generate(mx.zeros(SAMPLE_RATE), dtype=mx.bfloat16,
+                                  chunk_duration=None, verbose=False)
+
+    def run(self, audio, offset: float) -> list[Cue]:
+        import mlx.core as mx
+
+        with self._lock:
+            res = self._load().generate(mx.array(np.asarray(audio, np.float32)),
+                                        dtype=mx.bfloat16,
+                                        chunk_duration=None, verbose=False)
+
+        cues: list[Cue] = []
+        for s in getattr(res, "sentences", None) or []:
+            text = (s.text or "").strip()
+            if text and s.end > s.start:
+                cues.append(Cue(offset + s.start, offset + s.end, text))
+        if not cues:
+            text = (getattr(res, "text", "") or "").strip()
+            if text:
+                cues.append(Cue(offset, offset + len(audio) / SAMPLE_RATE, text))
+        return cues
+
+
 _backends: dict = {}
 _asr_name = ASR if ASR in ASR_BACKENDS else "whisper"
 
@@ -229,14 +308,19 @@ def get_backend(name: str | None = None):
     if name not in ASR_BACKENDS:
         raise ValueError(f"unknown ASR backend {name!r} (want one of {ASR_BACKENDS})")
     if name not in _backends:
-        _backends[name] = (WhisperASR(TRANSLATE_ASR, None, "translate")
-                           if name == "whisper" else PhononASR())
+        if name == "whisper":
+            _backends[name] = WhisperASR(TRANSLATE_ASR, None, "translate")
+        elif name == "phonon":
+            _backends[name] = PhononASR()
+        else:
+            _backends[name] = BarkASR()
     return _backends[name]
 
 
 def asr_state() -> dict:
     return {"current": _asr_name, "available": list(ASR_BACKENDS),
-            "models": {"whisper": TRANSLATE_ASR, "phonon": PHONON_MODEL}}
+            "models": {"whisper": TRANSLATE_ASR, "phonon": PHONON_MODEL,
+                       "bark": BARK_MODEL}}
 
 
 # --------------------------------------------------------------------------
