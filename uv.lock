@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'darwin'",
@@ -217,22 +217,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ca/65/efd0fe8a936fc8ca2978cb7b82581fb20d901c6039e746a808f746b7647b/confection-1.3.3.tar.gz", hash = "sha256:f0f6810d567ff73993fe74d218ca5e1ffb6a44fb03f391257fc5d033546cbfaa", size = 54895, upload-time = "2026-03-24T18:45:24.331Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/e4/d66708bdf0d92fb4d49b22cdff4b10cec38aca5dcd7e81d909bb55c65cd7/confection-1.3.3-py3-none-any.whl", hash = "sha256:b9fef9ee84b237ef4611ec3eb5797b70e13063e6310ad9f15536373f5e313c82", size = 35902, upload-time = "2026-03-24T18:45:22.664Z" },
-]
-
-[[package]]
-name = "constriction"
-version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/4f/f8b17efe27bbf50099849b2c469eeb319675cc756785780e5ce8bed626b0/constriction-0.5.0-cp312-cp312-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:180630e473fe9417ea5965c99a60f71c33e4554d8016ab80d5ed2a0853c9303a", size = 740610, upload-time = "2026-07-17T21:14:38.713Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/22/3cd340a047d24b0d3201d8cc8313c772d885e11edea1211f275c981bb584/constriction-0.5.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:7e8fa40ed400f461f1c2809d061a7d036d4e2631b525dc58fd70f92d938027c5", size = 387157, upload-time = "2026-07-17T21:14:39.924Z" },
-    { url = "https://files.pythonhosted.org/packages/90/ff/934d6b59fc6779b7ac57371fc7c2aa17042aa29d5aff4a4bcc5eb6a0cc84/constriction-0.5.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5474c99c7ecbd9d64de975f08b5571303bc1cb9d2544cc70e6925dd3a7713be6", size = 375743, upload-time = "2026-07-17T21:14:40.907Z" },
-    { url = "https://files.pythonhosted.org/packages/2a/2f/5b652525e6ae6e09c574a86b1e07cf50d9c2def834f49d55f5ddd7a4e4d6/constriction-0.5.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d74dbfb7f0d413862df31cb634759bd49ffa307f36948ed6ffa6c5f66ac9af0b", size = 405717, upload-time = "2026-07-17T21:11:48.86Z" },
-    { url = "https://files.pythonhosted.org/packages/4e/3c/866fc7f84c0121c9d1b2aaec2b8572c7760d895f0884698d6dc725d7e72e/constriction-0.5.0-cp312-cp312-win_amd64.whl", hash = "sha256:f541190e373393c611b0049fffddc197274a66741e75172ff32eb481cc433939", size = 305549, upload-time = "2026-07-17T21:41:55.962Z" },
 ]
 
 [[package]]
@@ -1189,7 +1173,6 @@ name = "overhear-subs"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "constriction" },
     { name = "fastapi" },
     { name = "fermion-research" },
     { name = "huggingface-hub" },
@@ -1211,7 +1194,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "constriction", specifier = ">=0.5" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fermion-research", specifier = ">=0.2.11" },
     { name = "huggingface-hub", specifier = ">=1.0" },

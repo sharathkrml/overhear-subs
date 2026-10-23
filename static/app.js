@@ -931,20 +931,16 @@ function hideControls() {
 // -------------------------------------------------- engine picker (ASR)
 
 // Whisper hears any language and translates to English; Phonon-2 is English
-// only and ~10x faster; Bark is English-only too, and drops fillers instead of
-// transcribing them. Switching mid-video applies to chunks not yet run;
+// only and ~10x faster. Switching mid-video applies to chunks not yet run;
 // already-transcribed chunks keep their old transcript.
 const ASR_LABELS = {
   whisper: "Auto → English (Whisper)",
   phonon: "English · fast (Phonon-2)",
-  bark: "English · clean (Bark 3.0)",
 };
 
 function modelHint() {
   if (S.asr?.current === "whisper")
     return "Loading Auto → English… first run downloads ~3 GB";
-  if (S.asr?.current === "bark")
-    return "Loading Bark 3.0… first run downloads ~180 MB and unpacks it";
   return "Loading Phonon-2… first run downloads ~164 MB";
 }
 

@@ -160,7 +160,7 @@ def test_export_is_served_as_a_download():
 
 def test_asr_state_lists_all_engines():
     state = _asr_state()
-    assert set(state["available"]) == {"whisper", "phonon", "bark"}
+    assert set(state["available"]) == {"whisper", "phonon"}
     assert state["current"] in state["available"]
 
 
