@@ -220,24 +220,12 @@ def cache_status() -> dict:
 def _run_ffmpeg(args: list[str], duration: float = 0.0,
                 on_progress: Callable[[float], None] | None = None,
                 timeout: float = 0.0) -> str:
-    """Run ffmpeg, reporting fraction done from its own -progress lines.
-
-    `-progress pipe:2` interleaves progress with the log on stderr, so one
-    stream carries both (silencedetect output and progress arrive together).
-
-    `timeout` is a watchdog on the whole run, because the loop below is blocked
-    reading a pipe and cannot poll a deadline itself. It is off by default; the
-    callers that pass one size it from the media duration so a file that stalls
-    ffmpeg forever cannot pin the request thread indefinitely.
-    """
+    """Run ffmpeg, reporting fraction done from its own -progress lines."""
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     watchdog = None
     timed_out = False
     if timeout > 0:
         def _kill() -> None:
-            # Recorded here rather than inferred from the exit code: an OOM kill
-            # is also -9, and calling that a timeout would send the reader
-            # looking for a slow file when the real problem is memory.
             nonlocal timed_out
             if proc.poll() is None:
                 timed_out = True
@@ -249,13 +237,19 @@ def _run_ffmpeg(args: list[str], duration: float = 0.0,
     log: list[str] = []
     try:
         for line in proc.stderr:
-            log.append(line)
             if on_progress and duration > 0 and line.startswith("out_time_ms="):
                 try:
                     micros = int(line.split("=", 1)[1] or 0)
                 except ValueError:
                     continue
                 on_progress(min(1.0, micros / 1_000_000 / duration))
+                continue
+            if len(log) < 10:
+                log.append(line.rstrip())
+            elif line.strip().startswith(("silence_", "Parsed", "[Parsed", "[silencedetect")):
+                if len(log) >= 15:
+                    log.pop(0)
+                log.append(line.rstrip())
         proc.wait()
     finally:
         if watchdog:
@@ -263,8 +257,8 @@ def _run_ffmpeg(args: list[str], duration: float = 0.0,
     if timed_out:
         raise TimeoutError(f"ffmpeg timed out after {timeout:g}s")
     if proc.returncode != 0:
-        raise RuntimeError("".join(log[-5:]).strip() or "ffmpeg failed")
-    return "".join(log)
+        raise RuntimeError("".join(log[-12:]).strip() or "ffmpeg failed")
+    return "\n".join(log)
 
 
 def _ffmpeg_budget(duration: float) -> float:
@@ -286,13 +280,18 @@ def extract_pcm(video: Path, duration: float = 0.0,
     meta = out.with_suffix(".json")
     if out.exists() and meta.exists() and out.stat().st_size > 0:
         return out
-    _run_ffmpeg(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(video),
-         "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le",
-         "-progress", "pipe:2", "-nostats", str(out)],
-        duration, on_progress, _ffmpeg_budget(duration),
-    )
-    meta.write_text(json.dumps({"source": str(video)}))
+    tmp = out.with_suffix(".f32.tmp")
+    try:
+        _run_ffmpeg(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(video),
+             "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "f32le",
+             "-progress", "pipe:2", "-nostats", str(tmp)],
+            duration, on_progress, _ffmpeg_budget(duration),
+        )
+        os.replace(tmp, out)
+        meta.write_text(json.dumps({"source": str(video)}))
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
 
 
@@ -320,8 +319,11 @@ def frame_jpeg(video: Path, t: float, root: Path) -> Path | None:
     # The browser fetches these, and a half-written file decodes as noise.
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".jpg.tmp")
-    tmp.write_bytes(proc.stdout)
-    os.replace(tmp, out)
+    try:
+        tmp.write_bytes(proc.stdout)
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
 
 
@@ -463,7 +465,6 @@ class PlaybackPrep:
             )
             self._proc = proc
             for line in proc.stdout:
-                log.append(line)
                 if self._cancelled.is_set():
                     proc.kill()
                     break
@@ -471,14 +472,21 @@ class PlaybackPrep:
                     try:
                         micros = int(line.split("=", 1)[1] or 0)
                     except ValueError:
-                        continue  # ffmpeg prints out_time_ms=N/A when it can't seek
+                        continue
                     self.progress = min(1.0, micros / 1_000_000 / duration)
+                    continue
+                if len(log) < 10:
+                    log.append(line.rstrip())
+                elif len(log) >= 15:
+                    pass  # drop noisy lines
+                else:
+                    log.append(line.rstrip())
             proc.wait()
             if self._cancelled.is_set():
                 part.unlink(missing_ok=True)
                 return
             if proc.returncode != 0:
-                raise RuntimeError(("".join(log[-5:]) or "ffmpeg failed").strip()[-300:])
+                raise RuntimeError(("".join(log[-12:]) or "ffmpeg failed").strip()[-400:])
             part.replace(cache)
             self.progress = 1.0
             self.output = cache
@@ -684,7 +692,8 @@ class AudioSource:
     def slice(self, t0: float, t1: float) -> np.ndarray:
         a = max(0, int(t0 * SAMPLE_RATE))
         b = min(len(self.data), int(t1 * SAMPLE_RATE))
-        return np.array(self.data[a:b], dtype=np.float32)
+        arr = self.data[a:b]
+        return np.ascontiguousarray(arr, dtype=np.float32)
 
 
 def build_media(

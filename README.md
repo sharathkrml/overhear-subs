@@ -118,9 +118,8 @@ Drag the timeline to scrub — it doubles as a pipeline meter, one cell per chun
 | `HF_TOKEN` | — | Hugging Face token (also `HUGGING_FACE_HUB_TOKEN`) |
 | `LT_LOOKAHEAD` | `10.0` | how much transcript in front of the playhead turns the "caught up" indicator green. Display only — transcription runs eagerly to the end of the file and this does **not** gate or pause the worker |
 | `LT_CHUNK` | `30.0` | chunk length in seconds; shorter means a seek waits less for captions |
-| `LT_ASR` | `phonon` | transcription engine: `phonon`, `whisper` or `bark` (switchable in the UI; this is the boot default) |
+| `LT_ASR` | `phonon` | transcription engine: `phonon` or `whisper` (switchable in the UI; this is the boot default) |
 | `LT_PHONON_MODEL` | `phonon-2` | Phonon repo (English-only, ~10x faster, 164 MB) |
-| `LT_BARK_MODEL` | `ConwayResearch/Underdog-Bark-3.0-Clean` | Bark repo (English-only, removes fillers, 180 MB download that unpacks to ~1.2 GB on first use) |
 | `LT_TRANSLATE_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR repo (must be translate-capable) |
 | `LT_REMUX` | `1` | convert unplayable files to browser-safe mp4 (`0` disables) |
 | `LT_TTS` | `0` | read-along on at open (`1` enables; the **Speak** button works either way) |

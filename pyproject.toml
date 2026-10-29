@@ -8,8 +8,6 @@ dependencies = [
     "mlx-audio>=0.2.0",
     # Phonon-2 engine (optional at runtime: only needed when selected).
     "fermion-research>=0.2.11",
-    # Decodes Bark's .bark weights (only needed when that engine is selected).
-    "constriction>=0.5",
     # Chapter titles, in-process on the chapter worker thread.
     "mlx-lm>=0.28",
     # Kokoro's grapheme-to-phoneme step. Needs espeak-ng (brew) on disk.
