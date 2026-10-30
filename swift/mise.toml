@@ -1,0 +1,38 @@
+[settings]
+experimental = true
+
+[tools]
+xcodegen = '2.45.3'
+
+[tasks.generate]
+description = 'Generate OverhearSubs.xcodeproj from project.yml'
+run = 'xcodegen generate'
+
+[tasks.build-debug]
+description = 'Debug compile only'
+depends = ['generate']
+run = '''
+set -o pipefail
+xcodebuild -project OverhearSubs.xcodeproj -scheme OverhearSubs \
+    -configuration Debug -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath build ARCHS=arm64 \
+    -skipPackagePluginValidation -skipMacroValidation \
+    build | grep -E 'error:|warning:|BUILD' || true
+'''
+
+[tasks.run]
+description = 'Build and open the app'
+depends = ['build-debug']
+run = 'open build/Build/Products/Debug/OverhearSubs.app'
+
+[tasks.test]
+description = 'Run tests'
+depends = ['generate']
+run = '''
+set -o pipefail
+xcodebuild -project OverhearSubs.xcodeproj -scheme OverhearSubsTests \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath build ARCHS=arm64 \
+    -skipPackagePluginValidation -skipMacroValidation \
+    test | grep -E 'error:|Test run|Suite .* (passed|failed)|\\*\\* TEST' || true
+'''

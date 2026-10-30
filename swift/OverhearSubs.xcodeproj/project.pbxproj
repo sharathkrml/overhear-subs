@@ -1,0 +1,500 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A66AA431A70FC0CF0424320 /* DesertAntUI in Frameworks */ = {isa = PBXBuildFile; productRef = C555C8442A771EB4A9CA6BD8 /* DesertAntUI */; };
+		102DB9B07F3DAD10B2035538 /* Reflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65DCBCD25C72F59DE319205A /* Reflow.swift */; };
+		21A705D8F34286B57201F3AA /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = D07F77BF30417BE1F5941823 /* WhisperKit */; };
+		4BC6F8D037E1D7D854F1336E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76907311F5E61ED1C1CB09A /* ContentView.swift */; };
+		5773A29C8190CB8E5ECA63CC /* Transcript in Frameworks */ = {isa = PBXBuildFile; productRef = AEF08C2BCD4C4F28F8D939C0 /* Transcript */; };
+		6E3D32B99BC4C729CAFE56A5 /* OverhearSubsApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBFAB9BFCDDAE00E8A753FD8 /* OverhearSubsApp.swift */; };
+		83F74323AC7AD385E54C13E7 /* ReflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3155E7F012AA1EF96C8FA877 /* ReflowTests.swift */; };
+		89880137363A3A1943238A48 /* ContentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F500FC29B4C472FC10C3EAA3 /* ContentViewModel.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BC7BF66C27E4E20F9A9C1AED /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E23384A711B17EB8531A38E2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FCEE21B6BC127F9A0F3E1C3A;
+			remoteInfo = OverhearSubs;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		3155E7F012AA1EF96C8FA877 /* ReflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReflowTests.swift; sourceTree = "<group>"; };
+		65DCBCD25C72F59DE319205A /* Reflow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reflow.swift; sourceTree = "<group>"; };
+		A5A5FA2593038E6257511592 /* OverhearSubsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OverhearSubsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CBFAB9BFCDDAE00E8A753FD8 /* OverhearSubsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverhearSubsApp.swift; sourceTree = "<group>"; };
+		F500FC29B4C472FC10C3EAA3 /* ContentViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewModel.swift; sourceTree = "<group>"; };
+		F76907311F5E61ED1C1CB09A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		FEF3EA8CCFEB996CA4E82BC3 /* OverhearSubs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OverhearSubs.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F580655741AA33319034FC17 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5773A29C8190CB8E5ECA63CC /* Transcript in Frameworks */,
+				0A66AA431A70FC0CF0424320 /* DesertAntUI in Frameworks */,
+				21A705D8F34286B57201F3AA /* WhisperKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		200B065C3E3D0D515D341709 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				F76907311F5E61ED1C1CB09A /* ContentView.swift */,
+				F500FC29B4C472FC10C3EAA3 /* ContentViewModel.swift */,
+				CBFAB9BFCDDAE00E8A753FD8 /* OverhearSubsApp.swift */,
+				65DCBCD25C72F59DE319205A /* Reflow.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		2F0A3101569900FEB87B9E26 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				200B065C3E3D0D515D341709 /* Sources */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		4C6CE92FA4CF25F0A7CAD8E7 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FEF3EA8CCFEB996CA4E82BC3 /* OverhearSubs.app */,
+				A5A5FA2593038E6257511592 /* OverhearSubsTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B8C0BE48BBD5F0F029277DC0 = {
+			isa = PBXGroup;
+			children = (
+				2F0A3101569900FEB87B9E26 /* App */,
+				C221585E2F24C08CA5112C10 /* Tests */,
+				4C6CE92FA4CF25F0A7CAD8E7 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C221585E2F24C08CA5112C10 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				3155E7F012AA1EF96C8FA877 /* ReflowTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		08FBCDFD8D4D9D8131735B75 /* OverhearSubsTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C79BDC4DD6F5A03ADAA32636 /* Build configuration list for PBXNativeTarget "OverhearSubsTests" */;
+			buildPhases = (
+				BF5217EC354B211517DF0DCA /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0FE920FC0DDD660302F7F637 /* PBXTargetDependency */,
+			);
+			name = OverhearSubsTests;
+			packageProductDependencies = (
+			);
+			productName = OverhearSubsTests;
+			productReference = A5A5FA2593038E6257511592 /* OverhearSubsTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FCEE21B6BC127F9A0F3E1C3A /* OverhearSubs */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1103F1DD314DA7A64A2FF9DE /* Build configuration list for PBXNativeTarget "OverhearSubs" */;
+			buildPhases = (
+				436216BCBA793F111E75F656 /* Sources */,
+				F580655741AA33319034FC17 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OverhearSubs;
+			packageProductDependencies = (
+				AEF08C2BCD4C4F28F8D939C0 /* Transcript */,
+				C555C8442A771EB4A9CA6BD8 /* DesertAntUI */,
+				D07F77BF30417BE1F5941823 /* WhisperKit */,
+			);
+			productName = OverhearSubs;
+			productReference = FEF3EA8CCFEB996CA4E82BC3 /* OverhearSubs.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E23384A711B17EB8531A38E2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					FCEE21B6BC127F9A0F3E1C3A = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1995BA82EEDFAC3A659C3445 /* Build configuration list for PBXProject "OverhearSubs" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B8C0BE48BBD5F0F029277DC0;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+				2A35D916E53253EF445C5464 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
+				F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */,
+				3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 4C6CE92FA4CF25F0A7CAD8E7 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FCEE21B6BC127F9A0F3E1C3A /* OverhearSubs */,
+				08FBCDFD8D4D9D8131735B75 /* OverhearSubsTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		436216BCBA793F111E75F656 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4BC6F8D037E1D7D854F1336E /* ContentView.swift in Sources */,
+				89880137363A3A1943238A48 /* ContentViewModel.swift in Sources */,
+				6E3D32B99BC4C729CAFE56A5 /* OverhearSubsApp.swift in Sources */,
+				102DB9B07F3DAD10B2035538 /* Reflow.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BF5217EC354B211517DF0DCA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				83F74323AC7AD385E54C13E7 /* ReflowTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0FE920FC0DDD660302F7F637 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FCEE21B6BC127F9A0F3E1C3A /* OverhearSubs */;
+			targetProxy = BC7BF66C27E4E20F9A9C1AED /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0211BFF64F1F576320A8DA97 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		24DD42614C461BCBD78FE8A6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharath.OverhearSubsTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OverhearSubs.app/Contents/MacOS/OverhearSubs";
+			};
+			name = Release;
+		};
+		5E216485E0EC715EA1E12A35 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		7787A8BFBEAEA917C232169C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sharath.OverhearSubsTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OverhearSubs.app/Contents/MacOS/OverhearSubs";
+			};
+			name = Debug;
+		};
+		E513577BF33274A23160E29E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sharath.overhear-subs";
+				PRODUCT_NAME = OverhearSubs;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E5519C131FAB8CF323E93B62 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.sharath.overhear-subs";
+				PRODUCT_NAME = OverhearSubs;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1103F1DD314DA7A64A2FF9DE /* Build configuration list for PBXNativeTarget "OverhearSubs" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E513577BF33274A23160E29E /* Debug */,
+				E5519C131FAB8CF323E93B62 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1995BA82EEDFAC3A659C3445 /* Build configuration list for PBXProject "OverhearSubs" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5E216485E0EC715EA1E12A35 /* Debug */,
+				0211BFF64F1F576320A8DA97 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C79BDC4DD6F5A03ADAA32636 /* Build configuration list for PBXNativeTarget "OverhearSubsTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7787A8BFBEAEA917C232169C /* Debug */,
+				24DD42614C461BCBD78FE8A6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		2A35D916E53253EF445C5464 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-argument-parser.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.5.0;
+			};
+		};
+		3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Desert-Ant-Labs/desert-ant-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.2;
+			};
+		};
+		EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
+		F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Desert-Ant-Labs/desert-ant-core.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AEF08C2BCD4C4F28F8D939C0 /* Transcript */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */;
+			productName = Transcript;
+		};
+		C555C8442A771EB4A9CA6BD8 /* DesertAntUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */;
+			productName = DesertAntUI;
+		};
+		D07F77BF30417BE1F5941823 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+			productName = WhisperKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E23384A711B17EB8531A38E2 /* Project object */;
+}
