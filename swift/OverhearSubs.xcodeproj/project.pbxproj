@@ -7,11 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0A66AA431A70FC0CF0424320 /* DesertAntUI in Frameworks */ = {isa = PBXBuildFile; productRef = C555C8442A771EB4A9CA6BD8 /* DesertAntUI */; };
 		102DB9B07F3DAD10B2035538 /* Reflow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65DCBCD25C72F59DE319205A /* Reflow.swift */; };
-		21A705D8F34286B57201F3AA /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = D07F77BF30417BE1F5941823 /* WhisperKit */; };
 		4BC6F8D037E1D7D854F1336E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76907311F5E61ED1C1CB09A /* ContentView.swift */; };
-		5773A29C8190CB8E5ECA63CC /* Transcript in Frameworks */ = {isa = PBXBuildFile; productRef = AEF08C2BCD4C4F28F8D939C0 /* Transcript */; };
 		6E3D32B99BC4C729CAFE56A5 /* OverhearSubsApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBFAB9BFCDDAE00E8A753FD8 /* OverhearSubsApp.swift */; };
 		83F74323AC7AD385E54C13E7 /* ReflowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3155E7F012AA1EF96C8FA877 /* ReflowTests.swift */; };
 		89880137363A3A1943238A48 /* ContentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F500FC29B4C472FC10C3EAA3 /* ContentViewModel.swift */; };
@@ -36,19 +33,6 @@
 		F76907311F5E61ED1C1CB09A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		FEF3EA8CCFEB996CA4E82BC3 /* OverhearSubs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OverhearSubs.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		F580655741AA33319034FC17 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				5773A29C8190CB8E5ECA63CC /* Transcript in Frameworks */,
-				0A66AA431A70FC0CF0424320 /* DesertAntUI in Frameworks */,
-				21A705D8F34286B57201F3AA /* WhisperKit in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		200B065C3E3D0D515D341709 /* Sources */ = {
@@ -122,7 +106,6 @@
 			buildConfigurationList = 1103F1DD314DA7A64A2FF9DE /* Build configuration list for PBXNativeTarget "OverhearSubs" */;
 			buildPhases = (
 				436216BCBA793F111E75F656 /* Sources */,
-				F580655741AA33319034FC17 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -130,9 +113,6 @@
 			);
 			name = OverhearSubs;
 			packageProductDependencies = (
-				AEF08C2BCD4C4F28F8D939C0 /* Transcript */,
-				C555C8442A771EB4A9CA6BD8 /* DesertAntUI */,
-				D07F77BF30417BE1F5941823 /* WhisperKit */,
 			);
 			productName = OverhearSubs;
 			productReference = FEF3EA8CCFEB996CA4E82BC3 /* OverhearSubs.app */;
@@ -161,12 +141,6 @@
 			);
 			mainGroup = B8C0BE48BBD5F0F029277DC0;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-				EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
-				2A35D916E53253EF445C5464 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
-				F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */,
-				3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */,
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4C6CE92FA4CF25F0A7CAD8E7 /* Products */;
 			projectDirPath = "";
@@ -255,7 +229,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
@@ -278,7 +252,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sharath.OverhearSubsTests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -338,7 +312,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = NO;
@@ -361,7 +335,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sharath.OverhearSubsTests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -382,7 +356,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.sharath.overhear-subs";
 				PRODUCT_NAME = OverhearSubs;
 				SDKROOT = macosx;
@@ -403,7 +377,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.sharath.overhear-subs";
 				PRODUCT_NAME = OverhearSubs;
 				SDKROOT = macosx;
@@ -442,59 +416,6 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		2A35D916E53253EF445C5464 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-argument-parser.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.5.0;
-			};
-		};
-		3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Desert-Ant-Labs/desert-ant-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.1.2;
-			};
-		};
-		EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.0;
-			};
-		};
-		F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Desert-Ant-Labs/desert-ant-core.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 3.1.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		AEF08C2BCD4C4F28F8D939C0 /* Transcript */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F465190808F7E6B4116ABAC2 /* XCRemoteSwiftPackageReference "desert-ant-core" */;
-			productName = Transcript;
-		};
-		C555C8442A771EB4A9CA6BD8 /* DesertAntUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 3AC8CB22982B7FBA0F5CAD66 /* XCRemoteSwiftPackageReference "desert-ant-swift" */;
-			productName = DesertAntUI;
-		};
-		D07F77BF30417BE1F5941823 /* WhisperKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = EF490E608F1F593D357C7D53 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
-			productName = WhisperKit;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E23384A711B17EB8531A38E2 /* Project object */;
 }
