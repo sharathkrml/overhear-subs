@@ -149,8 +149,10 @@ HF_TOKEN=hf_xxx LT_LOOKAHEAD=15 make run
 ([FermionResearch/Phonon-2](https://huggingface.co/FermionResearch/Phonon-2):
 English-only, ~10x faster, 164 MB). Switching with a video open reopens that
 video and retranscribes it all with the new engine, keeping your playhead and
-resuming playback if it was playing. Non-English audio under Phonon-2
-mistranscribes instead of translating — that engine only knows English.
+resuming playback if it was playing. The previous engine is unloaded before the
+new one starts loading, so only one ASR model is resident. Non-English audio
+under Phonon-2 mistranscribes instead of translating — that engine only knows
+English.
 
 ---
 

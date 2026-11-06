@@ -88,6 +88,13 @@ def resolve_model(repo_or_path: str) -> str:
     return str(p) if p.is_dir() else repo_or_path
 
 
+def _clear_mlx_cache() -> None:
+    """Free MLX's reusable buffers after the weights that filled them are gone."""
+    import mlx.core as mx
+
+    mx.clear_cache()
+
+
 # mlx-whisper calls huggingface_hub internally and reads the token from the
 # environment, so make sure a legacy var is visible under the standard name.
 if hf_token():
@@ -103,6 +110,7 @@ class WhisperASR:
         self.language = language
         self.task = task
         self._prompt: str | None = None
+        self._offloaded = False
         # mlx_whisper's model cache is process-global, so serialise the first
         # load: a startup warm and an early chunk must not both load it.
         self._lock = threading.Lock()
@@ -112,6 +120,8 @@ class WhisperASR:
         import mlx_whisper
 
         with self._lock:
+            if self._offloaded:
+                return
             mlx_whisper.transcribe(
                 np.zeros(SAMPLE_RATE, dtype=np.float32),
                 path_or_hf_repo=resolve_model(self.model),
@@ -124,6 +134,8 @@ class WhisperASR:
         import mlx_whisper
 
         with self._lock:
+            if self._offloaded:
+                return []
             result = mlx_whisper.transcribe(
                 audio,
                 path_or_hf_repo=resolve_model(self.model),
@@ -148,6 +160,20 @@ class WhisperASR:
             self._prompt = tail[-200:]
         return cues
 
+    def offload(self) -> None:
+        """Drop the weights. mlx_whisper caches them process-wide, so clearing
+        this instance alone would leave the model resident."""
+        self._offloaded = True
+        with self._lock:
+            try:
+                from mlx_whisper.transcribe import ModelHolder
+            except ImportError:
+                pass
+            else:
+                ModelHolder.model = None
+                ModelHolder.model_path = None
+            _clear_mlx_cache()
+
 
 class PhononASR:
     """English-only transcription via fermion (Phonon-2, MLX).
@@ -160,6 +186,7 @@ class PhononASR:
     def __init__(self, model: str = PHONON_MODEL):
         self.model = model
         self._model = None
+        self._offloaded = False
         # fermion holds its own resident model, so serialise callers the same
         # way: warm + first chunk must not load twice.
         self._lock = threading.Lock()
@@ -178,11 +205,15 @@ class PhononASR:
     def warm(self) -> None:
         """Load the weights now so the first chunk doesn't stall mid-playback."""
         with self._lock:
+            if self._offloaded:
+                return
             self._load().transcribe_array(
                 np.zeros(SAMPLE_RATE, dtype=np.float32))
 
     def run(self, audio, offset: float) -> list[Cue]:
         with self._lock:
+            if self._offloaded:
+                return []
             tr = self._load().transcribe_array_detailed(
                 np.asarray(audio, dtype=np.float32))
 
@@ -201,8 +232,16 @@ class PhononASR:
                 cues.append(Cue(offset, offset + len(audio) / SAMPLE_RATE, text))
         return cues
 
+    def offload(self) -> None:
+        """Drop the resident weights and the buffers MLX kept for them."""
+        self._offloaded = True
+        with self._lock:
+            self._model = None
+            _clear_mlx_cache()
+
 
 _backends: dict = {}
+_backend_lock = threading.RLock()
 _asr_name = ASR if ASR in ASR_BACKENDS else "whisper"
 
 
@@ -211,15 +250,21 @@ def current_backend_name() -> str:
 
 
 def set_backend(name: str):
-    """Switch engine. Each stays resident once loaded. Takes effect on the next
-    open — the client reopens the current video on switch, so in practice the
-    whole video is retranscribed with the new engine."""
+    """Switch engine, offloading every other model before the new one loads.
+
+    Takes effect on the next open — the client reopens the current video on
+    switch, so in practice the whole video is retranscribed with the new engine.
+    """
     global _asr_name
     name = (name or "").strip().lower()
     if name not in ASR_BACKENDS:
         raise ValueError(f"unknown ASR backend {name!r} (want one of {ASR_BACKENDS})")
-    _asr_name = name
-    return get_backend()
+    with _backend_lock:
+        for old_name in list(_backends):
+            if old_name != name:
+                _backends.pop(old_name).offload()
+        _asr_name = name
+        return get_backend()
 
 
 def get_backend(name: str | None = None):
@@ -228,12 +273,13 @@ def get_backend(name: str | None = None):
         name = _asr_name
     if name not in ASR_BACKENDS:
         raise ValueError(f"unknown ASR backend {name!r} (want one of {ASR_BACKENDS})")
-    if name not in _backends:
-        if name == "whisper":
-            _backends[name] = WhisperASR(TRANSLATE_ASR, None, "translate")
-        else:  # phonon
-            _backends[name] = PhononASR()
-    return _backends[name]
+    with _backend_lock:
+        if name not in _backends:
+            if name == "whisper":
+                _backends[name] = WhisperASR(TRANSLATE_ASR, None, "translate")
+            else:  # phonon
+                _backends[name] = PhononASR()
+        return _backends[name]
 
 
 def asr_state() -> dict:

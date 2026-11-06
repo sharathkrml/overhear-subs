@@ -99,16 +99,49 @@ def test_unknown_backend_is_rejected():
         backends.get_backend("conformer")
 
 
-def test_backend_switch_is_sticky_and_both_stay_resident(monkeypatch):
-    prev, backends._backends = backends._asr_name, {}
+def test_backend_switch_offloads_the_previous_model(monkeypatch):
+    prev_name, prev_backends = backends._asr_name, backends._backends
+    backends._asr_name, backends._backends = "phonon", {}
     try:
-        whisper = backends.get_backend("whisper")
+        backends.set_backend("whisper")
+        whisper = backends.get_backend()
+        offloaded = []
+        monkeypatch.setattr(whisper, "offload", lambda: offloaded.append(whisper))
+
         backends.set_backend("phonon")
         assert backends.current_backend_name() == "phonon"
+        assert offloaded == [whisper]
+        assert "whisper" not in backends._backends
         assert backends.get_backend() is backends._backends["phonon"]
-        assert backends.get_backend("whisper") is whisper
     finally:
-        backends._asr_name = prev
+        backends._asr_name, backends._backends = prev_name, prev_backends
+
+
+def test_whisper_offload_clears_the_process_global_model():
+    from mlx_whisper.transcribe import ModelHolder
+
+    prev_model, prev_path = ModelHolder.model, ModelHolder.model_path
+    try:
+        ModelHolder.model, ModelHolder.model_path = object(), "cached"
+        asr = WhisperASR("whatever")
+        asr.offload()
+        assert ModelHolder.model is None
+        assert ModelHolder.model_path is None
+        assert asr._offloaded is True
+    finally:
+        ModelHolder.model, ModelHolder.model_path = prev_model, prev_path
+
+
+def test_phonon_offload_releases_the_model(monkeypatch):
+    fake = _fake_fermion(monkeypatch, _detail(text="hello"))
+    asr = backends.PhononASR()
+    asr.run(np.zeros(16000, dtype=np.float32), 0.0)
+    assert asr._model is not None
+
+    asr.offload()
+    assert asr._model is None
+    asr.run(np.zeros(16000, dtype=np.float32), 0.0)
+    assert fake.models == ["phonon-2"], "an offloaded engine must not reload"
 
 
 def test_phonon_maps_segments_with_offset(monkeypatch):
