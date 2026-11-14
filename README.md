@@ -322,5 +322,5 @@ All Python goes through `uv` — no manual venv activation.
 ---
 
 ## License
-
+## 
 [MIT](LICENSE) — do whatever, just keep the copyright notice.
